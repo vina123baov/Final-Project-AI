@@ -43,12 +43,12 @@ interface VerificationRequestInsert {
   original_filename?: string
   status: VerificationStatus
   result_type?: ResultType
-  blur_score?: number
+  blur_score?: number | null
   is_blurry?: boolean
   predicted_class?: DocumentClass
   confidence?: number
   passed_confidence_check?: boolean
-  extracted_text?: string
+  extracted_text?: string | null
   ocr_confidence?: number
   household_name?: string
   household_address?: string

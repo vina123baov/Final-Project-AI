@@ -7,168 +7,90 @@ export interface DocumentValidationResult {
   isAccepted: boolean
 }
 
-export const VALID_KEYWORDS_POVERTY = [
-  'sổ hộ nghèo',
-  'hộ nghèo',
-  'giấy chứng nhận hộ nghèo',
-  'poverty household',
-  'household registration',
-  'poverty certificate',
-  'sổ hộ',
-  'xác nhận',
-  'gia đình',
-  'hộ gia đình',
-  'chứng nhận',
-  'năm',
-  'việt nam',
-  'công an',
-  'cấp'
-]
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-export const INVALID_KEYWORDS = [
-  'chứng chỉ',
-  'bằng cấp',
-  'căn cước',
-  'passport',
-  'hộ chiếu',
-  'bằng lái',
-  'học bạ',
-  'hóa đơn',
-  'invoice',
-  'album',
-  'ảnh',
-  'photo',
-  'ảnh cưới',
-  'portrait',
-  'selfie',
-  'bức ảnh',
-  'hình ảnh'
-]
-
+/**
+ * Goi backend AI pipeline de validate document
+ * Pipeline 5 buoc: Blur Detection -> Classification -> Confidence Check -> Class Handling -> OCR
+ */
 export async function validateDocument(file: File): Promise<DocumentValidationResult> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
+  try {
+    const formData = new FormData()
+    formData.append('image', file)
 
-    reader.onload = async (e) => {
-      try {
-        const canvas = document.createElement('canvas')
-        const img = new Image()
+    const response = await fetch(`${API_URL}/api/verify/`, {
+      method: 'POST',
+      body: formData,
+    })
 
-        img.onload = () => {
-          canvas.width = img.width
-          canvas.height = img.height
-          const ctx = canvas.getContext('2d')
-
-          if (!ctx) {
-            resolve({
-              type: 'unknown',
-              confidence: 0,
-              message: 'Không thể xử lý ảnh. Vui lòng thử lại.',
-              isAccepted: false,
-            })
-            return
-          }
-
-          ctx.drawImage(img, 0, 0)
-
-          // Simulate OCR-like text detection
-          // In production, you would use Google Cloud Vision API or similar
-          const simulatedText = `
-            CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM
-            UBND TỈNH
-            GIẤY CHỨNG NHẬN HỘ NGHÈO
-            SỐ BÀO CẤP - PHƯỜNG
-            ĐỘ NGHÈO
-            NĂM ${new Date().getFullYear()}
-            CÔNG AN
-          `
-
-          const validationResult = performTextAnalysis(simulatedText, file.name)
-          resolve(validationResult)
-        }
-
-        img.onerror = () => {
-          resolve({
-            type: 'invalid',
-            confidence: 0,
-            message: 'File không phải là ảnh hợp lệ. Vui lòng chọn file ảnh.',
-            isAccepted: false,
-          })
-        }
-
-        img.crossOrigin = 'anonymous'
-        img.src = e.target?.result as string
-      } catch (error) {
-        resolve({
-          type: 'unknown',
-          confidence: 0,
-          message: 'Lỗi xử lý file. Vui lòng thử lại.',
-          isAccepted: false,
-        })
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('Backend error:', response.status, errorText)
+      return {
+        type: 'unknown',
+        confidence: 0,
+        message: `Lỗi kết nối server (${response.status}). Vui lòng thử lại.`,
+        isAccepted: false,
       }
     }
 
-    reader.readAsDataURL(file)
-  })
-}
+    const data = await response.json()
 
-function performTextAnalysis(text: string, filename: string): DocumentValidationResult {
-  const upperText = text.toUpperCase()
-  const lowerText = text.toLowerCase()
+    // Map backend response to frontend validation result
+    // Backend returns: status, result_type, confidence, predicted_class, message, etc.
+    
+    const confidence = data.confidence ?? 0
+    const resultType = data.result_type ?? 'invalid'
+    const predictedClass = data.predicted_class ?? 'anh_khong_lien_quan'
+    const isSuccess = data.status === 'success' && resultType === 'success'
 
-  let validKeywordCount = 0
-  let invalidKeywordCount = 0
+    let type: DocumentType = 'unknown'
+    let message = data.message || 'Không thể xác định tài liệu.'
 
-  VALID_KEYWORDS_POVERTY.forEach(keyword => {
-    if (lowerText.includes(keyword.toLowerCase())) {
-      validKeywordCount++
+    if (isSuccess && predictedClass === 'so_ho_ngheo') {
+      type = 'poverty_household'
+      message = message || 'Sổ hộ nghèo được xác nhận. Tài liệu hợp lệ và sẵn sàng để xử lý.'
+    } else if (predictedClass === 'giay_to_khac') {
+      type = 'invalid'
+      message = message || 'Tài liệu này không phải sổ hộ nghèo. Vui lòng tải lên sổ hộ nghèo hợp lệ.'
+    } else if (predictedClass === 'anh_khong_lien_quan') {
+      type = 'invalid'
+      message = message || 'Ảnh không liên quan đến tài liệu. Vui lòng tải lên ảnh sổ hộ nghèo.'
+    } else if (resultType === 'blur') {
+      type = 'unknown'
+      message = message || 'Ảnh bị mờ. Vui lòng chụp ảnh rõ ràng hơn.'
+    } else if (resultType === 'low_confidence') {
+      type = 'unknown'
+      message = message || 'Không thể xác định rõ loại tài liệu. Vui lòng chụp ảnh rõ hơn.'
+    } else {
+      type = 'invalid'
     }
-  })
 
-  INVALID_KEYWORDS.forEach(keyword => {
-    if (lowerText.includes(keyword.toLowerCase())) {
-      invalidKeywordCount++
-    }
-  })
-
-  // Check filename for hints
-  const lowerFilename = filename.toLowerCase()
-  if (lowerFilename.includes('hộ nghèo') || lowerFilename.includes('poverty')) {
-    validKeywordCount += 2
-  }
-
-  if (invalidKeywordCount > 0) {
     return {
-      type: 'invalid',
-      confidence: 0.89,
-      message: 'Tài liệu này không phải sổ hộ nghèo. Vui lòng tải lên sổ hộ nghèo hợp lệ.',
+      type,
+      confidence,
+      message,
+      isAccepted: isSuccess,
+    }
+
+  } catch (error) {
+    console.error('Validation error:', error)
+    
+    // Kiem tra neu backend khong chay
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      return {
+        type: 'unknown',
+        confidence: 0,
+        message: 'Không thể kết nối đến server AI. Hãy đảm bảo backend đang chạy tại ' + API_URL,
+        isAccepted: false,
+      }
+    }
+
+    return {
+      type: 'unknown',
+      confidence: 0,
+      message: 'Lỗi xử lý ảnh. Vui lòng thử lại.',
       isAccepted: false,
     }
-  }
-
-  if (validKeywordCount >= 2) {
-    return {
-      type: 'poverty_household',
-      confidence: 0.89,
-      message: 'Sổ hộ nghèo được xác nhận. Tài liệu hợp lệ và sẵn sàng để xử lý.',
-      isAccepted: true,
-    }
-  }
-
-  // More lenient for valid-looking documents
-  if (validKeywordCount === 1) {
-    return {
-      type: 'poverty_household',
-      confidence: 0.75,
-      message: 'Sổ hộ nghèo được xác nhận. Tài liệu hợp lệ và sẵn sàng để xử lý.',
-      isAccepted: true,
-    }
-  }
-
-  return {
-    type: 'unknown',
-    confidence: 0.3,
-    message: 'Không thể xác định loại tài liệu. Vui lòng tải lên sổ hộ nghèo rõ ràng hơn.',
-    isAccepted: false,
   }
 }
