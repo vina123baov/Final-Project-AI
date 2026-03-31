@@ -1,35 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Loader } from '@googlemaps/js-api-loader'
 import { MapPin, AlertCircle } from 'lucide-react'
-
-declare global {
-  namespace google {
-    namespace maps {
-      class Map {
-        constructor(element: HTMLElement, options: any)
-      }
-      class Marker {
-        constructor(options: any)
-        setMap(map: Map | null): void
-        addListener(event: string, callback: () => void): void
-      }
-      class InfoWindow {
-        constructor(options: any)
-        open(map: Map, marker: Marker): void
-        close(): void
-      }
-      interface LatLng {
-        lat(): number
-        lng(): number
-      }
-      interface LatLngBounds {
-        contains(latLng: LatLng): boolean
-      }
-    }
-  }
-}
 
 interface SupportRequest {
   id: string
@@ -49,174 +21,157 @@ interface VietnamMapProps {
 export default function VietnamMap({ height = 'h-96', showStats = true }: VietnamMapProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
-  const markersRef = useRef<any[]>([])
   const [supportRequests, setSupportRequests] = useState<SupportRequest[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [selectedMarker, setSelectedMarker] = useState<SupportRequest | null>(null)
-
-  const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-
-  // Vietnam bounds to restrict map
-  const VIETNAM_BOUNDS = {
-    north: 23.393751,
-    south: 8.562454,
-    west: 102.144486,
-    east: 109.639173,
-  }
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!GOOGLE_MAPS_API_KEY) {
-      setError('Google Maps API key is not configured.')
-      setLoading(false)
-      return
-    }
+    if (!mapRef.current || mapInstanceRef.current) return
 
     const initMap = async () => {
       try {
-        const loader = new Loader({
-          apiKey: GOOGLE_MAPS_API_KEY,
-          version: 'weekly',
+        const L = (await import('leaflet')).default
+
+        // Fix leaflet default icon issue in Next.js
+        delete (L.Icon.Default.prototype as any)._getIconUrl
+        L.Icon.Default.mergeOptions({
+          iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+          iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
         })
 
-        const { Map, Marker, InfoWindow, LatLng } = await loader.load()
+        // Create map centered on Vietnam
+        const map = L.map(mapRef.current!, {
+          center: [15.87, 106.68],
+          zoom: 6,
+          minZoom: 5,
+          maxZoom: 18,
+        })
 
-        if (mapRef.current && typeof google !== 'undefined') {
-          // Center map on Vietnam
-          const mapInstance = new google.maps.Map(mapRef.current, {
-            zoom: 6,
-            center: { lat: 15.8700, lng: 106.6833 },
-            mapTypeId: 'roadmap',
-            restriction: {
-              latLngBounds: VIETNAM_BOUNDS,
-              strictBounds: false,
-            },
-            styles: [
-              {
-                featureType: 'all',
-                elementType: 'labels.text.fill',
-                stylers: [{ color: '#7c8494' }],
-              },
-              {
-                featureType: 'water',
-                elementType: 'geometry',
-                stylers: [{ color: '#e9e9e9' }, { lightness: 17 }],
-              },
-              {
-                featureType: 'administrative',
-                elementType: 'geometry.stroke',
-                stylers: [{ color: '#c9c9c9' }],
-              },
-            ],
+        // Add OpenStreetMap tile layer (FREE)
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19,
+        }).addTo(map)
+
+        mapInstanceRef.current = map
+
+        // Sample data for Vietnam
+        const requests: SupportRequest[] = [
+          {
+            id: '1',
+            latitude: 21.0285,
+            longitude: 105.8542,
+            address: 'Quận Hoàn Kiếm, Hà Nội',
+            familyName: 'Gia Đình Nguyễn Văn A',
+            supportNeeds: ['rice', 'water'],
+            status: 'verified',
+          },
+          {
+            id: '2',
+            latitude: 10.7769,
+            longitude: 106.7009,
+            address: 'Quận 1, TP. Hồ Chí Minh',
+            familyName: 'Gia Đình Trần Thị B',
+            supportNeeds: ['bread', 'food'],
+            status: 'pending',
+          },
+          {
+            id: '3',
+            latitude: 20.8449,
+            longitude: 106.6881,
+            address: 'Thành phố Hải Phòng',
+            familyName: 'Gia Đình Lê Văn C',
+            supportNeeds: ['rice', 'medicine', 'water'],
+            status: 'verified',
+          },
+          {
+            id: '4',
+            latitude: 16.0544,
+            longitude: 108.2022,
+            address: 'Thành phố Đà Nẵng',
+            familyName: 'Gia Đình Phạm Thị D',
+            supportNeeds: ['food', 'clothes'],
+            status: 'verified',
+          },
+          {
+            id: '5',
+            latitude: 12.2381,
+            longitude: 109.1967,
+            address: 'Thành phố Nha Trang',
+            familyName: 'Gia Đình Hoàng Văn E',
+            supportNeeds: ['rice', 'water', 'school_supplies'],
+            status: 'pending',
+          },
+        ]
+
+        setSupportRequests(requests)
+
+        // Add markers
+        requests.forEach((request) => {
+          const color =
+            request.status === 'verified' ? '#22c55e' :
+            request.status === 'pending' ? '#eab308' :
+            '#ef4444'
+
+          const icon = L.divIcon({
+            html: `<div style="
+              background-color: ${color};
+              width: 24px;
+              height: 24px;
+              border-radius: 50%;
+              border: 3px solid white;
+              box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            "></div>`,
+            className: '',
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
           })
 
-          mapInstanceRef.current = mapInstance
+          const marker = L.marker([request.latitude, request.longitude], { icon })
+            .addTo(map)
 
-          // Load support requests from localStorage
-          const storedRequests = localStorage.getItem('supportRequests')
-          let requests: SupportRequest[] = []
+          marker.bindPopup(`
+            <div style="font-size: 13px; min-width: 180px;">
+              <strong>${request.familyName}</strong><br/>
+              <span style="color: #666;">${request.address}</span><br/>
+              <span style="
+                display: inline-block;
+                margin-top: 4px;
+                padding: 2px 8px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 600;
+                background: ${color}20;
+                color: ${color};
+              ">
+                ${request.status === 'verified' ? '✓ Đã xác minh' :
+                  request.status === 'pending' ? '⏳ Chờ xác minh' : '✕ Bị từ chối'}
+              </span>
+            </div>
+          `)
 
-          if (storedRequests) {
-            try {
-              requests = JSON.parse(storedRequests)
-            } catch (e) {
-              console.error('Error parsing support requests:', e)
-            }
-          }
-
-          // Add sample Vietnam data if no requests exist
-          if (requests.length === 0) {
-            requests = [
-              {
-                id: '1',
-                latitude: 21.0285,
-                longitude: 105.8542,
-                address: 'Quận Hoàn Kiếm, Hà Nội',
-                familyName: 'Gia Đình Nguyễn Văn A',
-                supportNeeds: ['rice', 'water'],
-                status: 'verified',
-              },
-              {
-                id: '2',
-                latitude: 10.7769,
-                longitude: 106.7009,
-                address: 'Quận 1, TP. Hồ Chí Minh',
-                familyName: 'Gia Đình Trần Thị B',
-                supportNeeds: ['bread', 'food'],
-                status: 'pending',
-              },
-              {
-                id: '3',
-                latitude: 19.8245,
-                longitude: 105.7930,
-                address: 'Thành phố Hải Phòng',
-                familyName: 'Gia Đình Lê Văn C',
-                supportNeeds: ['rice', 'medicine', 'water'],
-                status: 'verified',
-              },
-              {
-                id: '4',
-                latitude: 16.0544,
-                longitude: 108.2022,
-                address: 'Thành phố Đà Nẵng',
-                familyName: 'Gia Đình Phạm Thị D',
-                supportNeeds: ['food', 'clothes'],
-                status: 'verified',
-              },
-              {
-                id: '5',
-                latitude: 12.2381,
-                longitude: 109.1967,
-                address: 'Thành phố Nha Trang',
-                familyName: 'Gia Đình Hoàng Văn E',
-                supportNeeds: ['rice', 'water', 'school_supplies'],
-                status: 'pending',
-              },
-            ]
-          }
-
-          setSupportRequests(requests)
-
-          // Add markers
-          requests.forEach((request) => {
-            const markerColor = {
-              verified: '#22c55e',
-              pending: '#eab308',
-              rejected: '#ef4444',
-            }[request.status] || '#3b82f6'
-
-            const marker = new google.maps.Marker({
-              position: { lat: request.latitude, lng: request.longitude },
-              map: mapInstance,
-              title: request.familyName,
-              icon: {
-                path: google.maps.SymbolPath.CIRCLE,
-                scale: 8,
-                fillColor: markerColor,
-                fillOpacity: 0.8,
-                strokeColor: '#ffffff',
-                strokeWeight: 2,
-              },
-            })
-
-            marker.addListener('click', () => {
-              setSelectedMarker(request)
-              mapInstance.panTo({ lat: request.latitude, lng: request.longitude })
-            })
-
-            markersRef.current.push(marker)
+          marker.on('click', () => {
+            setSelectedMarker(request)
           })
+        })
 
-          setLoading(false)
-        }
+        setLoading(false)
       } catch (err) {
-        setError('Failed to load map. Please try again.')
+        console.error('Map init error:', err)
         setLoading(false)
       }
     }
 
     initMap()
-  }, [GOOGLE_MAPS_API_KEY])
+
+    return () => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove()
+        mapInstanceRef.current = null
+      }
+    }
+  }, [])
 
   const stats = {
     total: supportRequests.length,
@@ -225,19 +180,14 @@ export default function VietnamMap({ height = 'h-96', showStats = true }: Vietna
     rejected: supportRequests.filter(r => r.status === 'rejected').length,
   }
 
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-96 bg-secondary/30 rounded-lg border border-border">
-        <div className="text-center">
-          <AlertCircle className="mx-auto mb-2 text-destructive" size={32} />
-          <p className="text-sm text-muted-foreground">{error}</p>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-4">
+      {/* Leaflet CSS */}
+      <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+      />
+
       {showStats && (
         <div className="grid grid-cols-4 gap-3">
           <div className="bg-card border border-border rounded-lg p-3 text-center">
@@ -259,7 +209,11 @@ export default function VietnamMap({ height = 'h-96', showStats = true }: Vietna
         </div>
       )}
 
-      <div className={`${height} rounded-lg border border-border overflow-hidden`} ref={mapRef} />
+      <div
+        ref={mapRef}
+        className={`${height} rounded-lg border border-border overflow-hidden`}
+        style={{ minHeight: '400px', zIndex: 0 }}
+      />
 
       {selectedMarker && (
         <div className="p-4 bg-card border border-border rounded-lg">
