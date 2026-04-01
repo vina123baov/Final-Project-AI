@@ -108,8 +108,10 @@ def verify_image(request):
         logger.info(
             f"Pipeline done: status={pipeline_result['status']}, "
             f"class={pipeline_result['predicted_class']}, "
-            f"confidence={pipeline_result['confidence']:.3f}, "
-            f"blur={pipeline_result['blur_score']:.1f}, "
+            f"confidence={pipeline_result['confidence'] or 0:.3f}, "
+            f"blur={pipeline_result['blur_score'] or 0:.1f}, "
+            f"stamp={pipeline_result.get('stamp_score', 0) or 0:.2f}, "
+            f"forgery={pipeline_result.get('forgery_score', 0) or 0:.2f}, "
             f"time={pipeline_result['processing_time_ms']}ms"
         )
 
@@ -145,6 +147,9 @@ def verify_image(request):
                 'user_latitude': latitude,
                 'user_longitude': longitude,
                 'user_location_address': address,
+                'stamp_detected': pipeline_result.get('stamp_detected', False),
+                'stamp_score': pipeline_result.get('stamp_score', 0.0),
+                'forgery_score': pipeline_result.get('forgery_score', 0.0),
             }
 
             if pipeline_result['status'] == 'success':
@@ -176,6 +181,9 @@ def verify_image(request):
                     'confidence': pipeline_result['confidence'],
                     'blur_score': pipeline_result['blur_score'],
                     'processing_time_ms': pipeline_result['processing_time_ms'],
+                    'stamp_detected': pipeline_result.get('stamp_detected', False),
+                    'stamp_score': pipeline_result.get('stamp_score', 0.0),
+                    'forgery_score': pipeline_result.get('forgery_score', 0.0),
                 }
             )
         else:

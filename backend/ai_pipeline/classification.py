@@ -74,6 +74,8 @@ class DocumentClassifier:
             logger.warning("=" * 60)
             logger.warning("MODEL KHONG TIM THAY! Chay che do DEMO.")
             logger.warning("Dat file .pth vao: backend/models/")
+            logger.warning("CANH BAO: Che do DEMO se tra ve 'anh_khong_lien_quan'")
+            logger.warning("          thay vi gia mao ket qua 'so_ho_ngheo'.")
             logger.warning("=" * 60)
             self.is_loaded = False
             return
@@ -122,13 +124,20 @@ class DocumentClassifier:
         """
         Phan loai tai lieu.
         Giong ham classify() trong PovertyCardVerifier (Colab).
+
+        FIX: Khi model chua load, tra ve 'anh_khong_lien_quan' voi confidence 0
+             thay vi gia mao 'so_ho_ngheo'. Dieu nay dam bao:
+             - Pipeline se REJECT anh (Buoc 4: class != so_ho_ngheo)
+             - Khong bao gio xac minh thanh cong khi chua co model that
+             - Nguoi dung nhan thong bao yeu cau thu lai hoac lien he admin
         """
         if not self.is_loaded:
+            logger.warning("Model chua load! Tra ve ket qua DEMO an toan (reject).")
             return {
-                'predicted_class': 'so_ho_ngheo',
-                'confidence': 0.85,
-                'all_probabilities': {c: 0.05 for c in self.classes},
-                'label_vi': CLASS_LABELS_VI['so_ho_ngheo'],
+                'predicted_class': 'anh_khong_lien_quan',
+                'confidence': 0.0,
+                'all_probabilities': {c: 0.0 for c in self.classes},
+                'label_vi': 'Model chua san sang',
                 'is_demo': True,
             }
 
