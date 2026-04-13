@@ -11,10 +11,9 @@ import SupportCategorySelector from '@/components/SupportCategorySelector'
 import LocationPicker from '@/components/LocationPicker'
 import { Upload, AlertCircle, HelpCircle, CheckCircle, XCircle, Map } from 'lucide-react'
 import Image from 'next/image'
-import VietnamMap from '@/components/VietnamMap'
+import VietnamMapLive from '@/components/VietnamMap'
 import { createClient } from '@/app/utils/supabase/client'
 import { verifyImage, type VerifyResponse } from '@/lib/api'
-import { validateDocument, DocumentValidationResult } from '@/lib/documentValidator'
 
 interface LocationData {
   latitude: number
@@ -31,12 +30,8 @@ export default function VerifyPage() {
   const [isDragging, setIsDragging] = useState(false)
   const [selectedCategories, setSelectedCategories] = useState<string[]>([])
   const [location, setLocation] = useState<LocationData | null>(null)
-
-  // 2 loai ket qua:
-  // 1. validationResult: validate nhanh phia client (hien ngay khi chon anh)
-  // 2. backendResult: ket qua tu Django backend (hien sau khi bam "Xac Minh Ngay")
-  const [validationResult, setValidationResult] = useState<DocumentValidationResult | null>(null)
   const [backendResult, setBackendResult] = useState<VerifyResponse | null>(null)
+  const [mapRefreshKey, setMapRefreshKey] = useState(0)
 
   const [user, setUser] = useState<{ id: string; email?: string } | null>(null)
   const [supabase] = useState(() => createClient())
@@ -49,7 +44,6 @@ export default function VerifyPage() {
     getUser()
   }, [supabase])
 
-  // Chon anh -> validate nhanh phia client (hien ket qua ngay nhu phien ban cu)
   const handleFileSelect = async (selectedFile: File) => {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/bmp']
     if (!allowedTypes.includes(selectedFile.type) && !selectedFile.type.startsWith('image/')) {
@@ -62,23 +56,11 @@ export default function VerifyPage() {
     }
 
     setFile(selectedFile)
-    setValidationResult(null)
     setBackendResult(null)
 
     const reader = new FileReader()
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       setPreview(e.target?.result as string)
-
-      // Validate nhanh phia client (giong phien ban cu)
-      const result = await validateDocument(selectedFile)
-      setValidationResult(result)
-
-      if (!result.isAccepted) {
-        setToast({ message: result.message, type: 'error' })
-        setFile(null)
-      } else {
-        setToast({ message: result.message, type: 'success' })
-      }
     }
     reader.readAsDataURL(selectedFile)
   }
@@ -90,7 +72,7 @@ export default function VerifyPage() {
     if (e.dataTransfer.files[0]) handleFileSelect(e.dataTransfer.files[0])
   }
 
-  // Submit -> goi backend Django (pipeline AI 7 buoc)
+  // Submit -> goi backend Django (pipeline AI)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!file) { setToast({ message: 'Vui lòng chọn một ảnh', type: 'error' }); return }
@@ -98,8 +80,9 @@ export default function VerifyPage() {
     if (!location) { setToast({ message: 'Vui lòng xác định vị trí của bạn', type: 'error' }); return }
 
     setIsLoading(true)
+    setBackendResult(null)
+
     try {
-      // Goi POST /api/verify/ -> Django -> AI Pipeline 7 buoc -> Supabase DB
       const result = await verifyImage(
         file,
         user?.id,
@@ -109,6 +92,10 @@ export default function VerifyPage() {
 
       if (result.success) {
         setToast({ message: `Xác minh thành công! Mã: ${result.data.verification_code || ''}`, type: 'success' })
+        // Refresh map de hien thi diem moi
+        setMapRefreshKey(prev => prev + 1)
+
+        // Luu session va chuyen trang
         sessionStorage.setItem('verificationData', JSON.stringify({
           id: result.data.id,
           verification_code: result.data.verification_code,
@@ -122,21 +109,23 @@ export default function VerifyPage() {
           processing_time_ms: result.data.processing_time_ms,
           timestamp: new Date().toISOString(),
         }))
-        setTimeout(() => { window.location.href = '/result' }, 1500)
+        setTimeout(() => { window.location.href = '/result' }, 2000)
       } else {
-        setToast({ message: result.message, type: 'error' })
+        setToast({ message: result.message || 'Xác minh thất bại. Vui lòng thử lại.', type: 'error' })
       }
     } catch (error) {
       console.error('Verification error:', error)
-      setToast({ message: error instanceof Error ? error.message : 'Lỗi kết nối server. Vui lòng thử lại.', type: 'error' })
+      const errMsg = error instanceof Error ? error.message : 'Lỗi kết nối server.'
+      // Parse error message from API response
+      let displayMsg = errMsg
+      if (errMsg.includes('API 500')) {
+        displayMsg = 'Lỗi server. Vui lòng kiểm tra backend đang chạy và database đã đúng cấu trúc.'
+      }
+      setToast({ message: displayMsg, type: 'error' })
     } finally {
       setIsLoading(false)
     }
   }
-
-  // Chon ket qua hien thi: uu tien backendResult, fallback validationResult
-  const displayResult = backendResult || null
-  const clientResult = validationResult
 
   return (
     <>
@@ -145,18 +134,18 @@ export default function VerifyPage() {
         <div className="container mx-auto max-w-2xl">
           <div className="mb-8">
             <h1 className="text-4xl font-bold text-foreground mb-2">Xác Minh Tài Liệu</h1>
-            <p className="text-muted-foreground">Tải lên ảnh sổ hộ nghèo của bạn để xác minh thông tin</p>
+            <p className="text-muted-foreground">Tải lên ảnh sổ hộ nghèo để xác minh và nhận hỗ trợ</p>
             {user && (
               <div className="mt-3 flex items-center gap-4 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1.5"><CheckCircle size={14} className="text-green-500" />Đã đăng nhập: {user.email}</span>
-                <Link href="/history" className="text-primary hover:underline">Xem lịch sử xác minh</Link>
+                <Link href="/history" className="text-primary hover:underline">Xem lịch sử</Link>
               </div>
             )}
             {!user && (
               <div className="mt-3 p-3 bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 rounded-lg flex items-center gap-2 text-sm">
                 <AlertCircle size={16} className="text-yellow-600 flex-shrink-0" />
                 <span className="text-yellow-800 dark:text-yellow-200">
-                  Vui lòng{' '}<Link href="/login" className="font-semibold underline">đăng nhập</Link>{' '}để lưu lịch sử xác minh. Bạn vẫn có thể xác minh mà không cần đăng nhập.
+                  <Link href="/login" className="font-semibold underline">Đăng nhập</Link> để lưu lịch sử xác minh.
                 </span>
               </div>
             )}
@@ -178,15 +167,15 @@ export default function VerifyPage() {
                     </div>
                     <p className="text-sm text-muted-foreground">{file?.name}</p>
 
-                    {/* === KET QUA CLIENT-SIDE (hien ngay khi chon anh) === */}
-                    {clientResult && !displayResult && (
+                    {/* Ket qua tu backend */}
+                    {backendResult && (
                       <div className={`p-6 rounded-2xl border-2 transition-all ${
-                        clientResult.isAccepted
+                        backendResult.success
                           ? 'bg-[#dcfce7] border-[#22c55e] shadow-lg shadow-[#22c55e]/20'
                           : 'bg-[#fee2e2] border-[#ef4444] shadow-lg shadow-[#ef4444]/20'
                       }`}>
                         <div className="flex items-start gap-4">
-                          {clientResult.isAccepted ? (
+                          {backendResult.success ? (
                             <div className="flex items-center justify-center w-12 h-12 rounded-full bg-[#dcfce7] flex-shrink-0">
                               <CheckCircle className="text-[#22c55e]" size={28} strokeWidth={3} />
                             </div>
@@ -196,78 +185,32 @@ export default function VerifyPage() {
                             </div>
                           )}
                           <div className="flex-1">
-                            <p className={`font-black mb-2 text-lg ${clientResult.isAccepted ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
-                              {clientResult.isAccepted ? '✓ Tài liệu hợp lệ' : '✗ Tài liệu không hợp lệ'}
+                            <p className={`font-black mb-2 text-lg ${backendResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
+                              {backendResult.success ? '✓ Tài liệu hợp lệ' : '✗ Tài liệu không hợp lệ'}
                             </p>
-                            <p className="text-sm text-foreground leading-relaxed">{clientResult.message}</p>
-                            <div className="flex items-center gap-2 mt-4 pt-3 border-t border-current border-opacity-20">
-                              <span className="text-xs font-semibold text-foreground">Độ tin cậy:</span>
-                              <div className="flex-1 h-2.5 bg-gray-300 rounded-full overflow-hidden">
-                                <div className={`h-full ${clientResult.isAccepted ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} style={{ width: `${Math.min(clientResult.confidence * 100, 100)}%` }} />
-                              </div>
-                              <span className={`text-xs font-black ${clientResult.isAccepted ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
-                                {(clientResult.confidence * 100).toFixed(0)}%
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                            <p className="text-sm text-foreground leading-relaxed">{backendResult.message}</p>
 
-                    {/* === KET QUA BACKEND (hien sau khi bam Xac Minh Ngay) === */}
-                    {displayResult && (
-                      <div className={`p-6 rounded-2xl border-2 transition-all ${
-                        displayResult.success
-                          ? 'bg-[#dcfce7] border-[#22c55e] shadow-lg shadow-[#22c55e]/20'
-                          : 'bg-[#fee2e2] border-[#ef4444] shadow-lg shadow-[#ef4444]/20'
-                      }`}>
-                        <div className="flex items-start gap-4">
-                          {displayResult.success ? (
-                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-[#dcfce7] flex-shrink-0">
-                              <CheckCircle className="text-[#22c55e]" size={28} strokeWidth={3} />
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-[#fee2e2] flex-shrink-0">
-                              <XCircle className="text-[#ef4444]" size={28} strokeWidth={3} />
-                            </div>
-                          )}
-                          <div className="flex-1">
-                            <p className={`font-black mb-2 text-lg ${displayResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
-                              {displayResult.success ? '✓ Tài liệu hợp lệ' : '✗ Tài liệu không hợp lệ'}
-                            </p>
-                            <p className="text-sm text-foreground leading-relaxed">{displayResult.message}</p>
-
-                            {displayResult.confidence !== null && (
+                            {backendResult.confidence !== null && backendResult.confidence !== undefined && (
                               <div className="flex items-center gap-2 mt-4 pt-3 border-t border-current border-opacity-20">
                                 <span className="text-xs font-semibold text-foreground">Độ tin cậy:</span>
                                 <div className="flex-1 h-2.5 bg-gray-300 rounded-full overflow-hidden">
-                                  <div className={`h-full ${displayResult.success ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} style={{ width: `${Math.min((displayResult.confidence || 0) * 100, 100)}%` }} />
+                                  <div className={`h-full ${backendResult.success ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} style={{ width: `${Math.min((backendResult.confidence || 0) * 100, 100)}%` }} />
                                 </div>
-                                <span className={`text-xs font-black ${displayResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
-                                  {((displayResult.confidence || 0) * 100).toFixed(0)}%
+                                <span className={`text-xs font-black ${backendResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
+                                  {((backendResult.confidence || 0) * 100).toFixed(0)}%
                                 </span>
                               </div>
                             )}
 
-                            {displayResult.blur_score !== null && (
-                              <p className="text-xs text-muted-foreground mt-2">
-                                Blur score: {displayResult.blur_score?.toFixed(1)} {displayResult.is_blurry ? '(mờ)' : '(rõ)'}
-                              </p>
+                            {backendResult.data.processing_time_ms && (
+                              <p className="text-xs text-muted-foreground mt-2">Thời gian xử lý: {backendResult.data.processing_time_ms}ms</p>
                             )}
-                            {displayResult.data.processing_time_ms && (
-                              <p className="text-xs text-muted-foreground">Thời gian xử lý: {displayResult.data.processing_time_ms}ms</p>
-                            )}
-
-                            {/* Badge: ket qua tu server */}
-                            <div className="mt-3 inline-block px-2 py-1 bg-primary/10 text-primary rounded text-xs font-medium">
-                              Kết quả từ AI Pipeline (server)
-                            </div>
                           </div>
                         </div>
                       </div>
                     )}
 
-                    <button type="button" onClick={() => { setFile(null); setPreview(null); setValidationResult(null); setBackendResult(null) }} className="text-primary hover:underline text-sm">
+                    <button type="button" onClick={() => { setFile(null); setPreview(null); setBackendResult(null) }} className="text-primary hover:underline text-sm">
                       Chọn ảnh khác
                     </button>
                   </div>
@@ -287,6 +230,7 @@ export default function VerifyPage() {
                 )}
               </div>
 
+              {/* Huong dan */}
               <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
                 <div className="flex gap-3">
                   <HelpCircle className="text-primary flex-shrink-0 mt-0.5" size={20} />
@@ -302,26 +246,30 @@ export default function VerifyPage() {
                 </div>
               </div>
 
+              {/* Vi tri */}
               <LocationPicker onLocationChange={setLocation} required={true} />
+
+              {/* Vat dung tiep te */}
               <SupportCategorySelector selected={selectedCategories} onChange={setSelectedCategories} />
 
+              {/* Nut xac minh */}
               <button
                 type="submit"
-                disabled={!file || isLoading || !validationResult?.isAccepted || selectedCategories.length === 0 || !location}
+                disabled={!file || isLoading || selectedCategories.length === 0 || !location}
                 className="w-full py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {isLoading ? (<><LoadingSpinner /><span>Đang xác minh qua AI Pipeline...</span></>) : !user ? ('Xác Minh (không lưu lịch sử)') : ('Xác Minh Ngay')}
+                {isLoading ? (<><LoadingSpinner /><span>Đang xác minh...</span></>) : ('Xác Minh Ngay')}
               </button>
             </form>
           </div>
 
+          {/* Thong tin */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-success/10 border border-success/20 rounded-lg p-4">
               <h3 className="font-semibold text-foreground mb-2">Tài liệu được chấp nhận</h3>
               <ul className="text-sm text-muted-foreground space-y-1">
                 <li className="flex items-center gap-2"><CheckCircle size={16} className="text-success" /> Sổ hộ nghèo</li>
               </ul>
-              <p className="text-xs text-muted-foreground mt-2">Chỉ chấp nhận Sổ Hộ Nghèo</p>
             </div>
             <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
               <h3 className="font-semibold text-foreground mb-2">Tài liệu không được chấp nhận</h3>
@@ -331,30 +279,20 @@ export default function VerifyPage() {
                 <li className="flex items-center gap-2"><XCircle size={16} className="text-destructive" /> Căn cước, hộ chiếu</li>
               </ul>
             </div>
-            <div className="bg-secondary/30 border border-border rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">Thời gian xử lý</h3>
-              <p className="text-sm text-muted-foreground">Hầu hết các yêu cầu sẽ được xử lý trong vòng 2-3 giây</p>
-            </div>
-          </div>
-
-          <div className="mt-8 p-4 bg-warning/10 border border-warning/20 rounded-lg flex gap-3">
-            <AlertCircle className="text-warning flex-shrink-0 mt-0.5" size={20} />
-            <div className="text-sm text-muted-foreground">
-              <strong className="text-foreground">Luồng xử lý:</strong> Chọn ảnh → Validate nhanh (client) → Bấm "Xác Minh Ngay" → Gửi lên Django backend → AI Pipeline 7 bước → Lưu kết quả vào database.
-            </div>
           </div>
         </div>
 
+        {/* Ban do Vietnam - hien thi diem do khi xac minh thanh cong */}
         <section className="py-12 border-t border-border mt-12">
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-4xl mx-auto px-4">
             <div className="flex items-center gap-3 mb-6">
               <div className="p-2 bg-primary/10 rounded-lg"><Map className="text-primary" size={24} /></div>
               <div>
                 <h2 className="text-2xl font-bold text-foreground">Phân Bố Gia Đình Cần Hỗ Trợ</h2>
-                <p className="text-sm text-muted-foreground">Theo dõi vị trí các gia đình đang cần hỗ trợ trên toàn Việt Nam</p>
+                <p className="text-sm text-muted-foreground">Mỗi chấm đỏ là một gia đình đã xác minh thành công</p>
               </div>
             </div>
-            <VietnamMap height="h-96" showStats={true} />
+            <VietnamMapLive key={mapRefreshKey} height="h-96" />
           </div>
         </section>
       </main>

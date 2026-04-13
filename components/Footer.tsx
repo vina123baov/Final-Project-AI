@@ -25,27 +25,25 @@ export default function Footer() {
             <ul className="space-y-3 text-sm text-muted-foreground">
               <li className="flex items-center gap-2">
                 <span className="text-primary">✉</span>
-                <span>support@verifyfamily.vn</span>
+                <span>vothaibao50@gmail.com</span>
               </li>
               <li className="flex items-center gap-2">
                 <span className="text-primary">☎</span>
-                <span>+84 (0) 123 456 789</span>
+                <span>+84 (0) 9454 467 61</span>
               </li>
             </ul>
           </div>
           <div>
             <h3 className="font-bold text-foreground mb-4">Giờ làm việc</h3>
             <p className="text-sm text-muted-foreground leading-relaxed">
-              <span className="font-medium text-foreground">Thứ 2 - Thứ 6:</span><br/>
-              8:00 - 17:00<br/>
-              <span className="font-medium text-foreground">Thứ 7 - Chủ nhật:</span><br/>
-              Đóng cửa
+              <span className="font-medium text-foreground">Thứ 2 - Chủ nhật:</span><br/>
+              5:00 AM - 23:00 PM<br/>
             </p>
           </div>
         </div>
         <div className="border-t border-border pt-8 flex flex-col md:flex-row items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            © 2024 VerifyFamily. Bảo lưu mọi quyền.
+            © 2026 VerifyFamily. Bảo lưu mọi quyền.
           </p>
           <div className="flex gap-8 mt-6 md:mt-0">
             <a href="#" className="text-sm text-muted-foreground hover:text-primary transition font-medium">Chính sách bảo mật</a>

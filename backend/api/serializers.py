@@ -1,7 +1,3 @@
-"""
-API Serializers
-Khoa luan: Phu luc A.2 (API Documentation), Phu luc A.3-A.5 (API Response)
-"""
 from rest_framework import serializers
 
 

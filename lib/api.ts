@@ -22,6 +22,9 @@ export interface VerifyResponse {
     household_address: string | null
     household_id_number: string | null
     processing_time_ms: number | null
+    user_latitude: number | null
+    user_longitude: number | null
+    user_location_address: string | null
   }
 }
 
@@ -102,6 +105,18 @@ export interface UserProfile {
   verification_count: number
 }
 
+export interface VerifiedLocation {
+  id: number
+  verification_code: string | null
+  household_name: string | null
+  household_address: string | null
+  user_latitude: number
+  user_longitude: number
+  user_location_address: string | null
+  status: string
+  created_at: string
+}
+
 export interface AuthTokens {
   access: string
   refresh: string
@@ -150,12 +165,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
   const headers: Record<string, string> = {}
 
-  // Dinh kem JWT token neu co (Section 2.1.2: JWT Authentication)
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  // Giu nguyen Content-Type tu options (khong set cho FormData)
   if (options?.headers) {
     Object.assign(headers, options.headers)
   }
@@ -165,7 +178,6 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     headers,
   })
 
-  // Token het han -> thu refresh
   if (res.status === 401 && getRefreshToken()) {
     const refreshed = await refreshAccessToken()
     if (refreshed) {
@@ -307,6 +319,11 @@ export async function toggleUserActive(userId: string, isActive: boolean): Promi
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, is_active: isActive }),
   })
+}
+
+// NEW: Lay vi tri cac ho da xac minh de hien thi tren map
+export async function getVerifiedLocations(): Promise<{ data: VerifiedLocation[]; count: number }> {
+  return apiFetch('/api/verified-locations/')
 }
 
 export async function healthCheck() {

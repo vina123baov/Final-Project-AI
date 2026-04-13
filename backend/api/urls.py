@@ -1,31 +1,9 @@
-"""
-API URLs
-Phu luc A.2 (API Documentation) + JWT Auth (Section 2.1.2)
-
-Endpoints:
-    POST /api/auth/login/           Dang nhap -> JWT tokens
-    POST /api/auth/register/        Dang ky tai khoan
-    POST /api/auth/refresh/         Refresh JWT token
-    GET  /api/auth/me/              Lay thong tin user hien tai
-
-    POST /api/verify/               UC03: Upload + AI Pipeline
-    GET  /api/result/<id>/          UC04: Xem ket qua
-    GET  /api/history/              UC05: Lich su xac minh
-
-    GET  /api/admin/dashboard/      UC08: Thong ke
-    GET  /api/admin/requests/       UC07: Danh sach yeu cau
-    POST /api/admin/review/         UC07: Duyet yeu cau
-    GET  /api/admin/users/          UC06: Quan ly nguoi dung
-    POST /api/admin/users/toggle/   UC06: Khoa/mo khoa tai khoan
-
-    GET  /api/health/               Health check
-"""
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
 
 urlpatterns = [
-    # Auth (Section 2.1.2: JWT Authentication)
+    # Auth
     path('auth/login/', views.auth_login, name='auth-login'),
     path('auth/register/', views.auth_register, name='auth-register'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='auth-refresh'),
@@ -35,6 +13,9 @@ urlpatterns = [
     path('verify/', views.verify_image, name='verify-image'),
     path('result/<int:request_id>/', views.get_result, name='get-result'),
     path('history/', views.get_history, name='get-history'),
+
+    # NEW: lay vi tri cac ho da xac minh de hien thi tren map
+    path('verified-locations/', views.get_verified_locations, name='verified-locations'),
 
     # Admin endpoints
     path('admin/dashboard/', views.admin_dashboard, name='admin-dashboard'),
