@@ -1,133 +1,53 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
-import { ChevronRight, CheckCircle, AlertTriangle, Eye, Download } from 'lucide-react'
-
-interface VerificationRecord {
-  id: string
-  date: string
-  documentType: string
-  status: 'success' | 'warning' | 'error'
-  confidence: number
-  documentName: string
-}
+import { CheckCircle, AlertTriangle, Loader, AlertCircle } from 'lucide-react'
+import { createClient } from '@/app/utils/supabase/client'
+import { getHistory, type HistoryRecord } from '@/lib/api'
 
 export default function HistoryPage() {
+  const [records, setRecords] = useState<HistoryRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 10
+  const [supabase] = useState(() => createClient())
 
-  const records: VerificationRecord[] = [
-    {
-      id: '1',
-      date: '2024-02-10',
-      documentType: 'Sổ hộ nghèo',
-      status: 'success',
-      confidence: 98.5,
-      documentName: 'Ho_Ngheo_2024.jpg',
-    },
-    {
-      id: '2',
-      date: '2024-02-09',
-      documentType: 'Chứng minh thư',
-      status: 'success',
-      confidence: 97.2,
-      documentName: 'CMND_001.jpg',
-    },
-    {
-      id: '3',
-      date: '2024-02-08',
-      documentType: 'Sổ hộ nghèo',
-      status: 'warning',
-      confidence: 78.5,
-      documentName: 'Ho_Ngheo_Jan.jpg',
-    },
-    {
-      id: '4',
-      date: '2024-02-07',
-      documentType: 'Hộ chiếu',
-      status: 'success',
-      confidence: 99.1,
-      documentName: 'Passport_2024.jpg',
-    },
-    {
-      id: '5',
-      date: '2024-02-06',
-      documentType: 'Sổ hộ nghèo',
-      status: 'success',
-      confidence: 95.8,
-      documentName: 'Ho_Ngheo_Feb.jpg',
-    },
-    {
-      id: '6',
-      date: '2024-02-05',
-      documentType: 'Chứng minh thư',
-      status: 'error',
-      confidence: 0,
-      documentName: 'CMND_Invalid.jpg',
-    },
-    {
-      id: '7',
-      date: '2024-02-04',
-      documentType: 'Sổ hộ nghèo',
-      status: 'success',
-      confidence: 96.3,
-      documentName: 'Ho_Ngheo_Backup.jpg',
-    },
-    {
-      id: '8',
-      date: '2024-02-03',
-      documentType: 'Chứng minh thư',
-      status: 'success',
-      confidence: 98.9,
-      documentName: 'CMND_002.jpg',
-    },
-  ]
+  useEffect(() => {
+    const init = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        setUserId(user.id)
+        try {
+          const data = await getHistory(user.id, 100)
+          setRecords(data.data)
+        } catch (err) { setError(err instanceof Error ? err.message : 'Không thể kết nối server') }
+      } else { setError('Vui lòng đăng nhập để xem lịch sử') }
+      setLoading(false)
+    }
+    init()
+  }, [supabase])
 
   const totalPages = Math.ceil(records.length / itemsPerPage)
   const startIdx = (currentPage - 1) * itemsPerPage
   const paginatedRecords = records.slice(startIdx, startIdx + itemsPerPage)
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'success':
-        return <CheckCircle className="text-success" size={20} />
-      case 'warning':
-        return <AlertTriangle className="text-warning" size={20} />
-      case 'error':
-        return <AlertTriangle className="text-destructive" size={20} />
-      default:
-        return null
-    }
-  }
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'success':
-        return 'Thành công'
-      case 'warning':
-        return 'Cảnh báo'
-      case 'error':
-        return 'Lỗi'
-      default:
-        return ''
-    }
-  }
-
   const getStatusBg = (status: string) => {
     switch (status) {
-      case 'success':
-        return 'bg-success/10 text-success'
-      case 'warning':
-        return 'bg-warning/10 text-warning'
-      case 'error':
-        return 'bg-destructive/10 text-destructive'
-      default:
-        return ''
+      case 'success': return 'bg-success/10 text-success'
+      case 'pending': return 'bg-warning/10 text-warning'
+      default: return 'bg-destructive/10 text-destructive'
     }
   }
+  const getStatusText = (status: string) => {
+    switch (status) { case 'success': return 'Thành công'; case 'pending': return 'Chờ duyệt'; default: return 'Thất bại' }
+  }
+
+  if (loading) return (<><Header /><main className="min-h-screen bg-background flex items-center justify-center"><div className="text-center"><Loader size={48} className="animate-spin text-primary mx-auto mb-4" /><p className="text-muted-foreground">Đang tải lịch sử...</p></div></main><Footer /></>)
 
   return (
     <>
@@ -136,128 +56,76 @@ export default function HistoryPage() {
         <div className="container mx-auto max-w-4xl">
           <div className="mb-8">
             <h1 className="text-4xl font-bold text-foreground mb-2">Lịch Sử Xác Minh</h1>
-            <p className="text-muted-foreground">Xem các yêu cầu xác minh trước đó của bạn</p>
+            <p className="text-muted-foreground">{error ? error : `${records.length} kết quả từ server`}</p>
           </div>
 
-          {/* Filters */}
-          <div className="bg-card border border-border rounded-lg p-4 mb-8">
-            <div className="flex flex-col md:flex-row gap-4">
-              <input
-                type="text"
-                placeholder="Tìm kiếm theo tên tài liệu..."
-                className="flex-1 px-4 py-2 border border-border rounded-lg bg-input text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-              />
-              <select className="px-4 py-2 border border-border rounded-lg bg-input text-foreground focus:outline-none focus:ring-2 focus:ring-primary">
-                <option value="">Tất cả trạng thái</option>
-                <option value="success">Thành công</option>
-                <option value="warning">Cảnh báo</option>
-                <option value="error">Lỗi</option>
-              </select>
-              <select className="px-4 py-2 border border-border rounded-lg bg-input text-foreground focus:outline-none focus:ring-2 focus:ring-primary">
-                <option value="">Tất cả loại tài liệu</option>
-                <option value="sohongheo">Sổ hộ nghèo</option>
-                <option value="cmnd">Chứng minh thư</option>
-                <option value="hochiep">Hộ chiếu</option>
-              </select>
+          {!error && records.length > 0 && (
+            <>
+              <div className="bg-card border border-border rounded-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-secondary/50 border-b border-border">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Ngày</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Mã XM</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Loại</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Trạng Thái</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Confidence</th>
+                        <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Kết Quả</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedRecords.map((r) => (
+                        <tr key={r.id} className="border-b border-border hover:bg-secondary/30 transition">
+                          <td className="px-6 py-4 text-sm">{new Date(r.created_at).toLocaleDateString('vi-VN')}</td>
+                          <td className="px-6 py-4 text-sm font-mono">{r.verification_code || '—'}</td>
+                          <td className="px-6 py-4 text-sm text-muted-foreground">
+                            {r.result_type === 'success' ? 'Sổ hộ nghèo' : r.result_type === 'blur' ? 'Ảnh mờ' : r.result_type === 'wrong_doc' ? 'Sai tài liệu' : r.result_type || '—'}
+                          </td>
+                          <td className="px-6 py-4 text-sm">
+                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusBg(r.status)}`}>{getStatusText(r.status)}</span>
+                          </td>
+                          <td className="px-6 py-4 text-sm">{r.confidence ? `${(r.confidence * 100).toFixed(1)}%` : '—'}</td>
+                          <td className="px-6 py-4 text-sm text-muted-foreground truncate max-w-[200px]">{r.result_message || r.message || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {totalPages > 1 && (
+                <div className="mt-8 flex items-center justify-between">
+                  <p className="text-sm text-muted-foreground">Hiển thị {startIdx + 1}-{Math.min(startIdx + itemsPerPage, records.length)} / {records.length}</p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-4 py-2 border border-border rounded-lg hover:bg-secondary disabled:opacity-50 text-foreground">Trước</button>
+                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                      <button key={page} onClick={() => setCurrentPage(page)} className={`px-4 py-2 rounded-lg ${currentPage === page ? 'bg-primary text-primary-foreground' : 'border border-border hover:bg-secondary text-foreground'}`}>{page}</button>
+                    ))}
+                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-4 py-2 border border-border rounded-lg hover:bg-secondary disabled:opacity-50 text-foreground">Sau</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {!error && records.length === 0 && (
+            <div className="text-center py-16">
+              <div className="text-6xl mb-4">📋</div>
+              <h3 className="text-xl font-bold text-foreground mb-2">Chưa có lịch sử</h3>
+              <p className="text-muted-foreground mb-6">Bạn chưa xác minh tài liệu nào</p>
+              <Link href="/verify" className="inline-block px-6 py-2 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90">Bắt Đầu Xác Minh</Link>
             </div>
-          </div>
+          )}
 
-          {/* Records Table */}
-          <div className="bg-card border border-border rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-secondary/50 border-b border-border">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Ngày</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Loại Tài Liệu</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Tên File</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Trạng Thái</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Độ Chính Xác</th>
-                    <th className="px-6 py-3 text-left text-sm font-semibold text-foreground">Hành Động</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paginatedRecords.map((record) => (
-                    <tr key={record.id} className="border-b border-border hover:bg-secondary/30 transition">
-                      <td className="px-6 py-4 text-sm text-foreground">{record.date}</td>
-                      <td className="px-6 py-4 text-sm text-foreground">{record.documentType}</td>
-                      <td className="px-6 py-4 text-sm text-muted-foreground">{record.documentName}</td>
-                      <td className="px-6 py-4 text-sm">
-                        <div className="flex items-center gap-2">
-                          {getStatusIcon(record.status)}
-                          <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusBg(record.status)}`}>
-                            {getStatusText(record.status)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-foreground">
-                        {record.confidence > 0 ? `${record.confidence}%` : '—'}
-                      </td>
-                      <td className="px-6 py-4 text-sm">
-                        <div className="flex items-center gap-2">
-                          <button className="p-2 hover:bg-secondary rounded-lg transition text-muted-foreground hover:text-foreground" title="Xem chi tiết">
-                            <Eye size={16} />
-                          </button>
-                          <button className="p-2 hover:bg-secondary rounded-lg transition text-muted-foreground hover:text-foreground" title="Tải xuống">
-                            <Download size={16} />
-                          </button>
-                          <Link href={`/history/${record.id}`} className="p-2 hover:bg-secondary rounded-lg transition text-muted-foreground hover:text-foreground">
-                            <ChevronRight size={16} />
-                          </Link>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {error && !userId && (
+            <div className="text-center py-16">
+              <AlertCircle size={48} className="text-warning mx-auto mb-4" />
+              <h3 className="text-xl font-bold text-foreground mb-2">Chưa đăng nhập</h3>
+              <p className="text-muted-foreground mb-6">Vui lòng đăng nhập để xem lịch sử</p>
+              <Link href="/login" className="inline-block px-6 py-2 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90">Đăng Nhập</Link>
             </div>
-          </div>
-
-          {/* Pagination */}
-          <div className="mt-8 flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">
-              Hiển thị {startIdx + 1} đến {Math.min(startIdx + itemsPerPage, records.length)} trong {records.length} kết quả
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                disabled={currentPage === 1}
-                className="px-4 py-2 border border-border rounded-lg hover:bg-secondary disabled:opacity-50 transition text-foreground"
-              >
-                Trước
-              </button>
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                <button
-                  key={page}
-                  onClick={() => setCurrentPage(page)}
-                  className={`px-4 py-2 rounded-lg transition ${
-                    currentPage === page
-                      ? 'bg-primary text-primary-foreground'
-                      : 'border border-border hover:bg-secondary text-foreground'
-                  }`}
-                >
-                  {page}
-                </button>
-              ))}
-              <button
-                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                disabled={currentPage === totalPages}
-                className="px-4 py-2 border border-border rounded-lg hover:bg-secondary disabled:opacity-50 transition text-foreground"
-              >
-                Sau
-              </button>
-            </div>
-          </div>
-
-          {/* Empty State - Uncomment to test */}
-          {/* <div className="text-center py-16">
-            <div className="text-6xl mb-4">📋</div>
-            <h3 className="text-xl font-bold text-foreground mb-2">Không có dữ liệu</h3>
-            <p className="text-muted-foreground mb-6">Bạn chưa xác minh tài liệu nào</p>
-            <Link href="/verify" className="inline-block px-6 py-2 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90">
-              Bắt Đầu Xác Minh
-            </Link>
-          </div> */}
+          )}
         </div>
       </main>
       <Footer />

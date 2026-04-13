@@ -1,37 +1,53 @@
 'use client'
 
 import React from "react"
-
 import { useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import Toast, { ToastType } from '@/components/Toast'
 import { Mail, Lock } from 'lucide-react'
+import { createClient } from '@/app/utils/supabase/client'
 
 export default function LoginPage() {
-  const [formData, setFormData] = useState({
-    email: '',
-    password: '',
-  })
+  const [formData, setFormData] = useState({ email: '', password: '' })
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const router = useRouter()
+  const supabase = createClient()
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target
-    setFormData(prev => ({ ...prev, [name]: value }))
+    setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }))
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+    if (!formData.email || !formData.password) {
+      setToast({ message: 'Vui lòng nhập email và mật khẩu', type: 'error' })
+      return
+    }
+
     setIsLoading(true)
     try {
-      await new Promise(resolve => setTimeout(resolve, 1500))
-      setToast({ message: 'Đăng nhập thành công!', type: 'success' })
-      setFormData({ email: '', password: '' })
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: formData.email,
+        password: formData.password,
+      })
+
+      if (error) {
+        setToast({ message: error.message === 'Invalid login credentials'
+          ? 'Email hoặc mật khẩu không đúng'
+          : error.message, type: 'error' })
+        return
+      }
+
+      if (data.session) {
+        setToast({ message: 'Đăng nhập thành công!', type: 'success' })
+        setTimeout(() => { router.replace('/') }, 500)
+      }
     } catch (error) {
-      setToast({ message: 'Email hoặc mật khẩu không đúng', type: 'error' })
+      setToast({ message: 'Lỗi đăng nhập. Vui lòng thử lại.', type: 'error' })
     } finally {
       setIsLoading(false)
     }
@@ -44,82 +60,42 @@ export default function LoginPage() {
         <div className="w-full max-w-md">
           <div className="bg-card rounded-xl border border-border p-8 shadow-lg">
             <h1 className="text-3xl font-bold text-foreground text-center mb-2">Đăng Nhập</h1>
-            <p className="text-center text-muted-foreground mb-8">Đăng nhập để tiếp tục xác minh tài liệu</p>
+            <p className="text-center text-muted-foreground mb-8">Đăng nhập để sử dụng hệ thống xác minh</p>
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-foreground mb-2">Email</label>
                 <div className="relative">
                   <Mail size={18} className="absolute left-3 top-3 text-muted-foreground" />
-                  <input
-                    type="email"
-                    name="email"
-                    value={formData.email}
-                    onChange={handleChange}
-                    placeholder="Nhập email hoặc username"
-                    required
-                    className="w-full pl-10 pr-4 py-2 border border-border rounded-lg bg-input text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
+                  <input type="email" name="email" value={formData.email} onChange={handleChange} placeholder="Nhập email" required className="w-full pl-10 pr-4 py-2 border border-border rounded-lg bg-input text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary" />
                 </div>
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-foreground">Mật khẩu</label>
-                  <Link href="/forgot-password" className="text-xs text-primary hover:underline">
-                    Quên mật khẩu?
-                  </Link>
-                </div>
+                <label className="block text-sm font-medium text-foreground mb-2">Mật khẩu</label>
                 <div className="relative">
                   <Lock size={18} className="absolute left-3 top-3 text-muted-foreground" />
-                  <input
-                    type="password"
-                    name="password"
-                    value={formData.password}
-                    onChange={handleChange}
-                    placeholder="Nhập mật khẩu"
-                    required
-                    className="w-full pl-10 pr-4 py-2 border border-border rounded-lg bg-input text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                  />
+                  <input type="password" name="password" value={formData.password} onChange={handleChange} placeholder="Nhập mật khẩu" required className="w-full pl-10 pr-4 py-2 border border-border rounded-lg bg-input text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary" />
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition disabled:opacity-50 mt-6"
-              >
-                {isLoading ? 'Đang xử lý...' : 'Đăng Nhập'}
+              <button type="submit" disabled={isLoading} className="w-full py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition disabled:opacity-50 mt-6">
+                {isLoading ? 'Đang đăng nhập...' : 'Đăng Nhập'}
               </button>
             </form>
 
             <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-card text-muted-foreground">hoặc</span>
-              </div>
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
+              <div className="relative flex justify-center text-sm"><span className="px-2 bg-card text-muted-foreground">hoặc</span></div>
             </div>
 
             <p className="text-center text-muted-foreground">
-              Chưa có tài khoản?{' '}
-              <Link href="/register" className="text-primary font-semibold hover:underline">
-                Đăng ký ngay
-              </Link>
+              Chưa có tài khoản?{' '}<Link href="/register" className="text-primary font-semibold hover:underline">Đăng ký ngay</Link>
             </p>
           </div>
         </div>
       </main>
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <Toast
-            message={toast.message}
-            type={toast.type}
-            onClose={() => setToast(null)}
-          />
-        </div>
-      )}
+      {toast && <div className="fixed bottom-4 right-4 z-50"><Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} /></div>}
       <Footer />
     </>
   )

@@ -1,25 +1,9 @@
-"""
-Buoc 5: OCR (Optical Character Recognition)
-Khoa luan: Section 1.4.2 (VietOCR)
-
-- VietOCR: Transformer-based Vietnamese OCR
-- Encoder: VGG-19 hoac ResNet-50
-- Decoder: Transformer 6 layers
-- CER: 3.2% (Bang 4.10)
-- Thoi gian: ~1.5 giay (Bang 4.13)
-
-===== HUONG DAN ADD VIETOCR =====
-1. pip install vietocr
-2. Model se tu dong download khi lan dau chay
-3. Hoac dat model vao thu muc models/ va config trong .env
-"""
 import logging
 from PIL import Image
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-# Flag kiem tra vietocr da cai chua
 VIETOCR_AVAILABLE = False
 _detector = None
 
@@ -86,7 +70,6 @@ def extract_text(image_input) -> dict:
 
     image = image.convert('RGB')
 
-    # --- VietOCR ---
     detector = _get_detector()
 
     if detector is None:
@@ -111,7 +94,7 @@ def extract_text(image_input) -> dict:
 
         return {
             'extracted_text': text,
-            'ocr_confidence': 0.95,  # VietOCR khong tra ve confidence tung dong
+            'ocr_confidence': 0.95,
             'is_demo': False,
             'household_name': parsed.get('household_name'),
             'household_address': parsed.get('household_address'),

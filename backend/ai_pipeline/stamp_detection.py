@@ -1,17 +1,3 @@
-"""
-Buoc 6: Stamp Detection (Nhan dien con dau chinh quyen)
-Khoa luan: Section 2.4.8
-
-So ho ngheo that luon co con dau do cua UBND xa/phuong.
-Module nay phat hien con dau bang xu ly anh voi OpenCV:
-    1. Chuyen anh sang HSV
-    2. Loc vung mau do (Hue 0-10 va 170-180)
-    3. Tim contours hinh tron/oval
-    4. Tinh stamp_score (0-1)
-
-Ket hop vao confidence tong the:
-    final_confidence = 0.7 * model_confidence + 0.3 * stamp_score
-"""
 import cv2
 import numpy as np
 from PIL import Image

@@ -5,171 +5,102 @@ import Link from 'next/link'
 import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import { SUPPORT_CATEGORIES } from '@/lib/constants'
-import { CheckCircle, AlertTriangle, AlertCircle, Download, RotateCcw, MapPin } from 'lucide-react'
+import { CheckCircle, AlertTriangle, AlertCircle, RotateCcw, MapPin } from 'lucide-react'
 
-type VerificationStatus = 'success' | 'blur' | 'low-confidence' | 'wrong-document' | 'invalid'
-
-interface LocationData {
-  latitude: number
-  longitude: number
-  address?: string
-  accuracy?: number
+interface VerificationData {
+  id: number | null
+  verification_code: string | null
+  location: { latitude: number; longitude: number; address?: string } | null
+  selectedCategories: string[]
+  confidence: number | null
+  status: string
+  result_type: string | null
+  extracted_text: string | null
+  household_name: string | null
+  household_address: string | null
+  processing_time_ms: number | null
+  timestamp: string
 }
 
 export default function ResultPage() {
-  const [status] = useState<VerificationStatus>('success')
-  const [location, setLocation] = useState<LocationData | null>(null)
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([])
+  const [data, setData] = useState<VerificationData | null>(null)
 
   useEffect(() => {
-    const data = sessionStorage.getItem('verificationData')
-    if (data) {
-      const parsed = JSON.parse(data)
-      setLocation(parsed.location)
-      setSelectedCategories(parsed.selectedCategories)
+    const stored = sessionStorage.getItem('verificationData')
+    if (stored) {
+      setData(JSON.parse(stored))
     }
   }, [])
 
-  const statusConfig = {
-    success: {
-      icon: CheckCircle,
-      color: 'success',
-      title: 'Xác Minh Thành Công!',
-      message: 'Thông tin sổ hộ nghèo của bạn đã được xác minh thành công.',
-      bgClass: 'bg-success/10 border-success/30',
-      textClass: 'text-success',
-    },
-    blur: {
-      icon: AlertTriangle,
-      color: 'warning',
-      title: 'Ảnh Mờ',
-      message: 'Ảnh bạn tải lên quá mờ. Vui lòng chụp ảnh rõ ràng hơn và thử lại.',
-      bgClass: 'bg-warning/10 border-warning/30',
-      textClass: 'text-warning',
-    },
-    'low-confidence': {
-      icon: AlertTriangle,
-      color: 'warning',
-      title: 'Không Thể Xác Định',
-      message: 'Hệ thống không thể xác định thông tin rõ ràng. Vui lòng chụp ảnh mới.',
-      bgClass: 'bg-warning/10 border-warning/30',
-      textClass: 'text-warning',
-    },
-    'wrong-document': {
-      icon: AlertCircle,
-      color: 'destructive',
-      title: 'Tài Liệu Không Hợp Lệ',
-      message: 'Tài liệu tải lên không phải là sổ hộ nghèo. Vui lòng kiểm tra lại.',
-      bgClass: 'bg-destructive/10 border-destructive/30',
-      textClass: 'text-destructive',
-    },
-    invalid: {
-      icon: AlertCircle,
-      color: 'destructive',
-      title: 'Ảnh Không Hợp Lệ',
-      message: 'Ảnh tải lên không hợp lệ hoặc bị hỏng. Vui lòng thử ảnh khác.',
-      bgClass: 'bg-destructive/10 border-destructive/30',
-      textClass: 'text-destructive',
-    },
+  if (!data) {
+    return (
+      <><Header /><main className="min-h-screen bg-background flex items-center justify-center px-4"><div className="text-center"><AlertCircle size={48} className="text-warning mx-auto mb-4" /><h2 className="text-xl font-bold text-foreground mb-2">Không có kết quả</h2><p className="text-muted-foreground mb-6">Vui lòng xác minh tài liệu trước</p><Link href="/verify" className="px-6 py-3 bg-primary text-primary-foreground font-bold rounded-lg inline-block">Xác Minh Ngay</Link></div></main><Footer /></>
+    )
   }
 
-  const config = statusConfig[status]
-  const Icon = config.icon
+  const isSuccess = data.status === 'success'
 
   return (
     <>
       <Header />
       <main className="min-h-screen bg-background py-12 px-4">
         <div className="container mx-auto max-w-2xl">
-          {/* Status Card */}
-          <div className={`border rounded-xl p-8 mb-8 ${config.bgClass}`}>
-            <div className="flex items-center gap-4 mb-4">
-              <Icon className={config.textClass} size={40} />
-              <h1 className={`text-2xl font-bold ${config.textClass}`}>{config.title}</h1>
+          {/* Status */}
+          <div className={`border rounded-xl p-8 mb-8 ${isSuccess ? 'bg-success/10 border-success/30' : 'bg-destructive/10 border-destructive/30'}`}>
+            <div className="flex items-center gap-4">
+              {isSuccess ? <CheckCircle className="text-success" size={40} /> : <AlertTriangle className="text-destructive" size={40} />}
+              <div>
+                <h1 className={`text-2xl font-bold mb-1 ${isSuccess ? 'text-success' : 'text-destructive'}`}>
+                  {isSuccess ? 'Xác Minh Thành Công!' : 'Xác Minh Thất Bại'}
+                </h1>
+                <p className="text-muted-foreground">
+                  {isSuccess ? 'Sổ hộ nghèo đã được xác minh thành công.' : 'Tài liệu không hợp lệ. Vui lòng thử lại.'}
+                </p>
+              </div>
             </div>
-            <p className="text-muted-foreground">{config.message}</p>
           </div>
 
-          {/* Extracted Information */}
-          {status === 'success' && (
-            <div className="bg-card border border-border rounded-xl p-8 mb-8">
-              <h2 className="text-xl font-bold text-foreground mb-6">Thông Tin Được Trích Xuất</h2>
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="bg-secondary/30 rounded-lg p-4">
-                    <p className="text-sm text-muted-foreground mb-1">Họ và tên</p>
-                    <p className="font-semibold text-foreground">Nguyễn Văn A</p>
-                  </div>
-                  <div className="bg-secondary/30 rounded-lg p-4">
-                    <p className="text-sm text-muted-foreground mb-1">Số CMND</p>
-                    <p className="font-semibold text-foreground">123456789</p>
-                  </div>
-                  <div className="bg-secondary/30 rounded-lg p-4">
-                    <p className="text-sm text-muted-foreground mb-1">Năm sinh</p>
-                    <p className="font-semibold text-foreground">1985</p>
-                  </div>
-                  <div className="bg-secondary/30 rounded-lg p-4">
-                    <p className="text-sm text-muted-foreground mb-1">Giới tính</p>
-                    <p className="font-semibold text-foreground">Nam</p>
-                  </div>
-                  <div className="bg-secondary/30 rounded-lg p-4 md:col-span-2">
-                    <p className="text-sm text-muted-foreground mb-1">Địa chỉ thường trú</p>
-                    <p className="font-semibold text-foreground">Xã Thanh Lâm, Huyện Hạ Hòa, Phú Thọ</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-8 p-4 bg-primary/5 border border-primary/20 rounded-lg">
-                <p className="text-sm text-muted-foreground">
-                  <strong className="text-foreground">Độ chính xác:</strong> 98.5%
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  <strong className="text-foreground">Thời gian xử lý:</strong> 1.2 giây
-                </p>
-              </div>
-            </div>
-          )}
+          {/* Verification Info */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            {data.verification_code && (
+              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Mã Xác Minh</p><p className="font-semibold text-foreground font-mono">{data.verification_code}</p></div>
+            )}
+            {data.confidence !== null && (
+              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Độ Tin Cậy</p><p className="font-semibold text-foreground">{(data.confidence * 100).toFixed(1)}%</p></div>
+            )}
+            {data.processing_time_ms && (
+              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Thời Gian Xử Lý</p><p className="font-semibold text-foreground">{(data.processing_time_ms / 1000).toFixed(1)} giây</p></div>
+            )}
+          </div>
 
           {/* Location & Support Needs */}
-          {location && selectedCategories.length > 0 && (
+          {data.location && data.selectedCategories.length > 0 && (
             <div className="bg-card border border-border rounded-xl p-8 mb-8">
-              <h2 className="text-xl font-bold text-foreground mb-6">Thông Tin Bổ Sung</h2>
-              
-              {/* Location */}
+              <h2 className="text-xl font-bold text-foreground mb-6">Thông Tin Hỗ Trợ</h2>
+
               <div className="mb-6 pb-6 border-b border-border">
                 <div className="flex items-start gap-3">
-                  <div className="p-2 bg-primary/10 rounded-lg flex-shrink-0">
-                    <MapPin className="text-primary" size={20} />
-                  </div>
+                  <div className="p-2 bg-primary/10 rounded-lg flex-shrink-0"><MapPin className="text-primary" size={20} /></div>
                   <div className="flex-1">
                     <p className="font-semibold text-foreground mb-1">Vị Trí Gia Đình</p>
                     <p className="text-sm text-muted-foreground">
-                      {location.address || `${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`}
+                      {data.location.address || `${data.location.latitude.toFixed(4)}, ${data.location.longitude.toFixed(4)}`}
                     </p>
-                    {location.accuracy && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Độ chính xác: ±{Math.round(location.accuracy)} mét
-                      </p>
-                    )}
                   </div>
                 </div>
               </div>
 
-              {/* Support Categories */}
               <div>
                 <p className="font-semibold text-foreground mb-4">Nhu Cầu Hỗ Trợ</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-                  {selectedCategories.map(categoryId => {
+                  {data.selectedCategories.map(categoryId => {
                     const category = SUPPORT_CATEGORIES.find(c => c.id === categoryId)
-                    return (
-                      <div
-                        key={categoryId}
-                        className={`flex flex-col items-center justify-center p-3 rounded-lg ${category?.color}`}
-                      >
-                        <span className="text-2xl mb-1">{category?.icon}</span>
-                        <span className="text-xs font-semibold text-center">{category?.name}</span>
+                    return category ? (
+                      <div key={categoryId} className={`flex flex-col items-center justify-center p-3 rounded-lg ${category.color}`}>
+                        <span className="text-2xl mb-1">{category.icon}</span>
+                        <span className="text-xs font-semibold text-center">{category.name}</span>
                       </div>
-                    )
+                    ) : null
                   })}
                 </div>
               </div>
@@ -178,38 +109,18 @@ export default function ResultPage() {
 
           {/* Actions */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Link
-              href="/verify"
-              className="flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition"
-            >
-              <RotateCcw size={20} />
-              Xác Minh Tài Liệu Khác
+            <Link href="/verify" className="flex items-center justify-center gap-2 px-6 py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition">
+              <RotateCcw size={20} />Xác Minh Tài Liệu Khác
             </Link>
-            <button className="flex items-center justify-center gap-2 px-6 py-3 bg-secondary text-foreground font-bold rounded-lg hover:bg-muted transition border border-border">
-              <Download size={20} />
-              Tải Kết Quả
-            </button>
+            <Link href="/history" className="flex items-center justify-center gap-2 px-6 py-3 bg-secondary text-foreground font-bold rounded-lg hover:bg-muted transition border border-border">
+              Xem Lịch Sử
+            </Link>
           </div>
 
-          {/* Info Section */}
-          <div className="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-card border border-border rounded-lg p-6">
-              <h3 className="font-bold text-foreground mb-3">Tiếp Theo?</h3>
-              <ul className="text-sm text-muted-foreground space-y-2">
-                <li>✓ Kết quả đã được lưu trong tài khoản của bạn</li>
-                <li>✓ Bạn có thể xem lại kết quả bất kỳ lúc nào</li>
-                <li>✓ Chia sẻ kết quả với những người được phép</li>
-              </ul>
-            </div>
-            <div className="bg-card border border-border rounded-lg p-6">
-              <h3 className="font-bold text-foreground mb-3">Cần Trợ Giúp?</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Nếu có bất kỳ câu hỏi hoặc vấn đề, vui lòng liên hệ với chúng tôi
-              </p>
-              <a href="#" className="text-primary font-semibold hover:underline text-sm">
-                Liên hệ hỗ trợ →
-              </a>
-            </div>
+          <div className="mt-8 p-4 bg-primary/5 border border-primary/20 rounded-lg">
+            <p className="text-sm text-muted-foreground">
+              <strong className="text-foreground">Lưu ý:</strong> Kết quả đã được lưu trong tài khoản của bạn. Chỉ hiển thị mã xác minh, vị trí và nhu cầu hỗ trợ — không lưu thông tin cá nhân.
+            </p>
           </div>
         </div>
       </main>

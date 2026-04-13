@@ -1,21 +1,3 @@
-"""
-Pipeline Xu Ly Anh (Main Orchestrator) - PHIEN BAN CAI TIEN
-Khoa luan: Section 2.4.1, 2.4.7, 2.4.8, 2.4.9
-
-Pipeline 7 buoc:
-    Buoc 1: Blur Detection      (Laplacian Variance, threshold=100)     ~0.1s
-    Buoc 2: Forgery Detection   (ELA + Metadata Analysis)               ~0.3s
-    Buoc 3: Classification      (EfficientNet-B0, 3 classes)            ~0.5s
-    Buoc 4: Confidence Check    (threshold=0.7)                         ~0.01s
-    Buoc 5: Xu ly theo class    (routing logic)                         ~0.01s
-    Buoc 6: Stamp Detection     (HSV filter + contours)                 ~0.2s
-    Buoc 7: OCR                 (VietOCR)                               ~1.5s
-
-    Tong: ~2.6s, target < 5s
-
-Confidence Aggregation (Section 2.4.8):
-    final_confidence = 0.7 * model_confidence + 0.3 * stamp_score
-"""
 import time
 import logging
 from django.conf import settings
@@ -28,7 +10,6 @@ from .forgery_detection import detect_forgery
 
 logger = logging.getLogger(__name__)
 
-# Messages mapping (Phu luc A.3)
 MESSAGES = {
     'blur': 'Anh bi mo. Vui long chup lai.',
     'forgery': 'Phat hien dau hieu chinh sua anh.',
@@ -40,7 +21,6 @@ MESSAGES = {
     'so_ho_ngheo': 'Xac minh thanh cong!',
 }
 
-# Forgery thresholds
 FORGERY_REJECT_THRESHOLD = 0.7
 FORGERY_REVIEW_THRESHOLD = 0.4
 
@@ -52,14 +32,10 @@ def run_pipeline(image_path: str) -> dict:
     start_time = time.time()
     pipeline_details = {}
 
-    # Lay thresholds
     classifier = get_classifier()
     confidence_threshold = classifier.confidence_threshold if classifier.is_loaded else getattr(settings, 'CONFIDENCE_THRESHOLD', 0.7)
     blur_threshold = classifier.blur_threshold if classifier.is_loaded else getattr(settings, 'BLUR_THRESHOLD', 100)
 
-    # ==================================================================
-    # BUOC 1: Blur Detection (Section 1.5.2)
-    # ==================================================================
     logger.info("Pipeline Step 1/7: Blur Detection")
     step_start = time.time()
 
@@ -79,9 +55,6 @@ def run_pipeline(image_path: str) -> dict:
             processing_time_ms=total_time, pipeline_details=pipeline_details,
         )
 
-    # ==================================================================
-    # BUOC 2: Forgery Detection (Section 2.4.9)
-    # ==================================================================
     logger.info("Pipeline Step 2/7: Forgery Detection")
     step_start = time.time()
 
@@ -107,9 +80,6 @@ def run_pipeline(image_path: str) -> dict:
     # Ghi nhan neu nghi ngo (0.4-0.7) nhung van tiep tuc pipeline
     needs_review = forgery_score >= FORGERY_REVIEW_THRESHOLD
 
-    # ==================================================================
-    # BUOC 3: Document Classification (Section 1.3)
-    # ==================================================================
     logger.info("Pipeline Step 3/7: Document Classification")
     step_start = time.time()
 
@@ -122,9 +92,6 @@ def run_pipeline(image_path: str) -> dict:
     predicted_class = classification_result['predicted_class']
     confidence = classification_result['confidence']
 
-    # ==================================================================
-    # BUOC 4: Confidence Check (Section 4.3.3)
-    # ==================================================================
     logger.info(f"Pipeline Step 4/7: Confidence Check ({confidence} vs {confidence_threshold})")
 
     passed_confidence = confidence >= confidence_threshold
@@ -147,9 +114,6 @@ def run_pipeline(image_path: str) -> dict:
             pipeline_details=pipeline_details,
         )
 
-    # ==================================================================
-    # BUOC 5: Xu ly theo class (Section 2.4.1)
-    # ==================================================================
     logger.info(f"Pipeline Step 5/7: Class Handling -> {predicted_class}")
 
     if predicted_class == 'anh_khong_lien_quan':
@@ -174,10 +138,6 @@ def run_pipeline(image_path: str) -> dict:
             processing_time_ms=total_time, pipeline_details=pipeline_details,
         )
 
-    # ==================================================================
-    # BUOC 6: Stamp Detection (Section 2.4.8)
-    # Chi chay khi predicted_class == 'so_ho_ngheo'
-    # ==================================================================
     logger.info("Pipeline Step 6/7: Stamp Detection")
     step_start = time.time()
 
@@ -190,8 +150,6 @@ def run_pipeline(image_path: str) -> dict:
     stamp_score = stamp_result.get('stamp_score', 0.0)
     stamp_detected = stamp_result.get('stamp_detected', False)
 
-    # Confidence Aggregation (Section 2.4.8):
-    # final_confidence = 0.7 * model_confidence + 0.3 * stamp_score
     final_confidence = round(0.7 * confidence + 0.3 * stamp_score, 4)
 
     pipeline_details['confidence_aggregation'] = {
@@ -212,15 +170,12 @@ def run_pipeline(image_path: str) -> dict:
             passed_confidence_check=True,
             stamp_detected=stamp_detected, stamp_score=stamp_score,
             forgery_score=forgery_score,
-            message='Can admin xem xet (confidence giam sau kiem tra con dau).',
+            message='Day khong phai so ho ngheo.',
             need_retry=False,
             processing_time_ms=round((time.time() - start_time) * 1000),
             pipeline_details=pipeline_details,
         )
 
-    # ==================================================================
-    # BUOC 7: OCR - VietOCR (Section 1.4.2)
-    # ==================================================================
     logger.info("Pipeline Step 7/7: OCR (VietOCR)")
     step_start = time.time()
 
@@ -232,9 +187,6 @@ def run_pipeline(image_path: str) -> dict:
         'time_ms': round((time.time() - step_start) * 1000),
     }
 
-    # ==================================================================
-    # KET QUA
-    # ==================================================================
     total_time = round((time.time() - start_time) * 1000)
 
     # Neu forgery nghi ngo (0.4-0.7) -> pending review
@@ -258,7 +210,6 @@ def run_pipeline(image_path: str) -> dict:
             processing_time_ms=total_time, pipeline_details=pipeline_details,
         )
 
-    # Thanh cong hoan toan
     logger.info(f"Pipeline COMPLETED successfully in {total_time}ms")
     return _build_result(
         status='success', result_type='success',

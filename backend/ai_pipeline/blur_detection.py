@@ -1,15 +1,3 @@
-"""
-Buoc 1: Blur Detection
-Khoa luan: Section 1.5.2 (Phuong phap Laplacian Variance)
-
-- Chuyen anh sang grayscale
-- Ap dung toan tu Laplacian bang OpenCV
-- Tinh variance cua ket qua
-- So sanh voi nguong (threshold = 100)
-- Neu variance < 100 -> anh mo
-
-Thoi gian: ~0.1 giay (Bang 4.13)
-"""
 import cv2
 import numpy as np
 from PIL import Image
