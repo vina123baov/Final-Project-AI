@@ -9,9 +9,9 @@ import Toast, { ToastType } from '@/components/Toast'
 import LoadingSpinner from '@/components/LoadingSpinner'
 import SupportCategorySelector from '@/components/SupportCategorySelector'
 import LocationPicker from '@/components/LocationPicker'
-import { Upload, AlertCircle, HelpCircle, CheckCircle, XCircle, Map } from 'lucide-react'
+import { Upload, AlertCircle, HelpCircle, CheckCircle, XCircle, Map, Shield, Eye, FileSearch, Fingerprint, Stamp, FileText } from 'lucide-react'
 import Image from 'next/image'
-import VietnamMapLive from '@/components/VietnamMap'
+import VietnamMap from '@/components/VietnamMap'
 import { createClient } from '@/app/utils/supabase/client'
 import { verifyImage, type VerifyResponse } from '@/lib/api'
 
@@ -22,6 +22,96 @@ interface LocationData {
   accuracy?: number
 }
 
+// ============================
+// Overlay loading — hien thi pipeline steps
+// ============================
+const PIPELINE_STEPS = [
+  { icon: Eye, label: 'Kiểm tra độ mờ', desc: 'Phân tích chất lượng ảnh...' },
+  { icon: Shield, label: 'Phát hiện giả mạo', desc: 'Kiểm tra tính xác thực...' },
+  { icon: FileSearch, label: 'Phân loại tài liệu', desc: 'Nhận dạng loại giấy tờ...' },
+  { icon: Fingerprint, label: 'Kiểm tra độ tin cậy', desc: 'Đánh giá kết quả AI...' },
+  { icon: Stamp, label: 'Phát hiện con dấu', desc: 'Tìm kiếm dấu xác nhận...' },
+  { icon: FileText, label: 'Trích xuất thông tin (OCR)', desc: 'Đọc nội dung tài liệu...' },
+]
+
+function VerifyingOverlay() {
+  const [currentStep, setCurrentStep] = useState(0)
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentStep(prev => (prev < PIPELINE_STEPS.length - 1 ? prev + 1 : prev))
+    }, 2500)
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center">
+      <div className="bg-card rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 border border-border">
+        {/* Spinner */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="relative w-20 h-20 mb-4">
+            <div className="absolute inset-0 rounded-full border-4 border-primary/20"></div>
+            <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-primary animate-spin"></div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-lg font-bold text-primary">{currentStep + 1}/{PIPELINE_STEPS.length}</span>
+            </div>
+          </div>
+          <h2 className="text-xl font-bold text-foreground mb-1">Đang Xác Minh</h2>
+          <p className="text-sm text-muted-foreground">Vui lòng chờ, không đóng trang này</p>
+        </div>
+
+        {/* Pipeline steps */}
+        <div className="space-y-3">
+          {PIPELINE_STEPS.map((step, idx) => {
+            const Icon = step.icon
+            const isActive = idx === currentStep
+            const isDone = idx < currentStep
+
+            return (
+              <div
+                key={idx}
+                className={`flex items-center gap-3 p-3 rounded-lg transition-all duration-500 ${
+                  isActive ? 'bg-primary/10 border border-primary/30 scale-[1.02]' :
+                  isDone ? 'bg-success/10 border border-success/20' :
+                  'bg-secondary/30 border border-transparent opacity-50'
+                }`}
+              >
+                <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                  isActive ? 'bg-primary text-primary-foreground' :
+                  isDone ? 'bg-success text-white' :
+                  'bg-muted text-muted-foreground'
+                }`}>
+                  {isDone ? <CheckCircle size={16} /> : <Icon size={16} />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${isActive ? 'text-primary' : isDone ? 'text-success' : 'text-muted-foreground'}`}>
+                    {step.label}
+                  </p>
+                  {isActive && (
+                    <p className="text-xs text-muted-foreground animate-pulse">{step.desc}</p>
+                  )}
+                </div>
+                {isActive && (
+                  <div className="flex-shrink-0">
+                    <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <p className="text-center text-xs text-muted-foreground mt-6">
+          Quá trình xác minh có thể mất 5-15 giây
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// ============================
+// Main Page
+// ============================
 export default function VerifyPage() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
@@ -47,21 +137,15 @@ export default function VerifyPage() {
   const handleFileSelect = async (selectedFile: File) => {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/bmp']
     if (!allowedTypes.includes(selectedFile.type) && !selectedFile.type.startsWith('image/')) {
-      setToast({ message: 'Vui lòng chọn tệp hình ảnh (JPG, PNG, BMP)', type: 'error' })
-      return
+      setToast({ message: 'Vui lòng chọn tệp hình ảnh (JPG, PNG, BMP)', type: 'error' }); return
     }
     if (selectedFile.size > 5 * 1024 * 1024) {
-      setToast({ message: 'Kích thước tệp không được vượt quá 5MB', type: 'error' })
-      return
+      setToast({ message: 'Kích thước tệp không được vượt quá 5MB', type: 'error' }); return
     }
-
     setFile(selectedFile)
     setBackendResult(null)
-
     const reader = new FileReader()
-    reader.onload = (e) => {
-      setPreview(e.target?.result as string)
-    }
+    reader.onload = (e) => setPreview(e.target?.result as string)
     reader.readAsDataURL(selectedFile)
   }
 
@@ -72,7 +156,6 @@ export default function VerifyPage() {
     if (e.dataTransfer.files[0]) handleFileSelect(e.dataTransfer.files[0])
   }
 
-  // Submit -> goi backend Django (pipeline AI)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!file) { setToast({ message: 'Vui lòng chọn một ảnh', type: 'error' }); return }
@@ -86,16 +169,15 @@ export default function VerifyPage() {
       const result = await verifyImage(
         file,
         user?.id,
-        { latitude: location.latitude, longitude: location.longitude, address: location.address }
+        { latitude: location.latitude, longitude: location.longitude, address: location.address },
+        selectedCategories
       )
       setBackendResult(result)
 
       if (result.success) {
         setToast({ message: `Xác minh thành công! Mã: ${result.data.verification_code || ''}`, type: 'success' })
-        // Refresh map de hien thi diem moi
         setMapRefreshKey(prev => prev + 1)
 
-        // Luu session va chuyen trang
         sessionStorage.setItem('verificationData', JSON.stringify({
           id: result.data.id,
           verification_code: result.data.verification_code,
@@ -111,16 +193,14 @@ export default function VerifyPage() {
         }))
         setTimeout(() => { window.location.href = '/result' }, 2000)
       } else {
-        setToast({ message: result.message || 'Xác minh thất bại. Vui lòng thử lại.', type: 'error' })
+        setToast({ message: result.message || 'Xác minh thất bại.', type: 'error' })
       }
     } catch (error) {
       console.error('Verification error:', error)
       const errMsg = error instanceof Error ? error.message : 'Lỗi kết nối server.'
-      // Parse error message from API response
       let displayMsg = errMsg
-      if (errMsg.includes('API 500')) {
-        displayMsg = 'Lỗi server. Vui lòng kiểm tra backend đang chạy và database đã đúng cấu trúc.'
-      }
+      if (errMsg.includes('API 500')) displayMsg = 'Lỗi server. Kiểm tra backend và database.'
+      if (errMsg.includes('API 429')) displayMsg = 'Bạn đã vượt giới hạn 10 lần xác minh/ngày. Vui lòng thử lại ngày mai.'
       setToast({ message: displayMsg, type: 'error' })
     } finally {
       setIsLoading(false)
@@ -130,6 +210,10 @@ export default function VerifyPage() {
   return (
     <>
       <Header />
+
+      {/* OVERLAY khi dang xac minh */}
+      {isLoading && <VerifyingOverlay />}
+
       <main className="min-h-screen bg-background py-12 px-4">
         <div className="container mx-auto max-w-2xl">
           <div className="mb-8">
@@ -153,13 +237,9 @@ export default function VerifyPage() {
 
           <div className="bg-card border border-border rounded-xl p-8 mb-8">
             <form onSubmit={handleSubmit} className="space-y-6">
-              {/* Upload Area */}
-              <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-lg p-12 text-center transition ${isDragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary'}`}
-              >
+              {/* Upload */}
+              <div onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+                className={`border-2 border-dashed rounded-lg p-12 text-center transition ${isDragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary'}`}>
                 {preview ? (
                   <div className="space-y-4">
                     <div className="relative w-full h-48 rounded-lg overflow-hidden border border-border">
@@ -167,32 +247,20 @@ export default function VerifyPage() {
                     </div>
                     <p className="text-sm text-muted-foreground">{file?.name}</p>
 
-                    {/* Ket qua tu backend */}
                     {backendResult && (
-                      <div className={`p-6 rounded-2xl border-2 transition-all ${
-                        backendResult.success
-                          ? 'bg-[#dcfce7] border-[#22c55e] shadow-lg shadow-[#22c55e]/20'
-                          : 'bg-[#fee2e2] border-[#ef4444] shadow-lg shadow-[#ef4444]/20'
-                      }`}>
+                      <div className={`p-6 rounded-2xl border-2 ${backendResult.success ? 'bg-[#dcfce7] border-[#22c55e]' : 'bg-[#fee2e2] border-[#ef4444]'}`}>
                         <div className="flex items-start gap-4">
-                          {backendResult.success ? (
-                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-[#dcfce7] flex-shrink-0">
-                              <CheckCircle className="text-[#22c55e]" size={28} strokeWidth={3} />
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-[#fee2e2] flex-shrink-0">
-                              <XCircle className="text-[#ef4444]" size={28} strokeWidth={3} />
-                            </div>
-                          )}
+                          <div className={`flex items-center justify-center w-12 h-12 rounded-full flex-shrink-0 ${backendResult.success ? 'bg-[#dcfce7]' : 'bg-[#fee2e2]'}`}>
+                            {backendResult.success ? <CheckCircle className="text-[#22c55e]" size={28} strokeWidth={3} /> : <XCircle className="text-[#ef4444]" size={28} strokeWidth={3} />}
+                          </div>
                           <div className="flex-1">
                             <p className={`font-black mb-2 text-lg ${backendResult.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
                               {backendResult.success ? '✓ Tài liệu hợp lệ' : '✗ Tài liệu không hợp lệ'}
                             </p>
-                            <p className="text-sm text-foreground leading-relaxed">{backendResult.message}</p>
-
-                            {backendResult.confidence !== null && backendResult.confidence !== undefined && (
-                              <div className="flex items-center gap-2 mt-4 pt-3 border-t border-current border-opacity-20">
-                                <span className="text-xs font-semibold text-foreground">Độ tin cậy:</span>
+                            <p className="text-sm text-foreground">{backendResult.message}</p>
+                            {backendResult.confidence != null && (
+                              <div className="flex items-center gap-2 mt-4 pt-3 border-t border-current/20">
+                                <span className="text-xs font-semibold">Độ tin cậy:</span>
                                 <div className="flex-1 h-2.5 bg-gray-300 rounded-full overflow-hidden">
                                   <div className={`h-full ${backendResult.success ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} style={{ width: `${Math.min((backendResult.confidence || 0) * 100, 100)}%` }} />
                                 </div>
@@ -201,18 +269,20 @@ export default function VerifyPage() {
                                 </span>
                               </div>
                             )}
-
-                            {backendResult.data.processing_time_ms && (
-                              <p className="text-xs text-muted-foreground mt-2">Thời gian xử lý: {backendResult.data.processing_time_ms}ms</p>
+                            {/* FIX: chi hien processing time khi > 0 */}
+                            {backendResult.data.processing_time_ms != null && backendResult.data.processing_time_ms > 0 && (
+                              <p className="text-xs text-muted-foreground mt-2">
+                                Thời gian xử lý: {backendResult.data.processing_time_ms < 1000
+                                  ? `${backendResult.data.processing_time_ms}ms`
+                                  : `${(backendResult.data.processing_time_ms / 1000).toFixed(1)}s`}
+                              </p>
                             )}
                           </div>
                         </div>
                       </div>
                     )}
 
-                    <button type="button" onClick={() => { setFile(null); setPreview(null); setBackendResult(null) }} className="text-primary hover:underline text-sm">
-                      Chọn ảnh khác
-                    </button>
+                    <button type="button" onClick={() => { setFile(null); setPreview(null); setBackendResult(null) }} className="text-primary hover:underline text-sm">Chọn ảnh khác</button>
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -225,64 +295,53 @@ export default function VerifyPage() {
                       <input type="file" accept="image/jpeg,image/png,image/bmp" onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])} className="hidden" />
                       <span className="cursor-pointer text-primary font-semibold hover:underline">chọn từ máy tính</span>
                     </label>
-                    <p className="text-xs text-muted-foreground">Định dạng: JPG, PNG, BMP (Kích thước tối đa: 5MB)</p>
+                    <p className="text-xs text-muted-foreground">JPG, PNG, BMP (tối đa 5MB)</p>
                   </div>
                 )}
               </div>
 
-              {/* Huong dan */}
               <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
                 <div className="flex gap-3">
                   <HelpCircle className="text-primary flex-shrink-0 mt-0.5" size={20} />
                   <div>
-                    <h3 className="font-semibold text-foreground mb-2">Hướng Dẫn Chụp Ảnh</h3>
+                    <h3 className="font-semibold text-foreground mb-2">Hướng Dẫn</h3>
                     <ul className="text-sm text-muted-foreground space-y-1">
-                      <li>✓ Chụp ảnh rõ ràng, không bị mờ hoặc nhòe</li>
-                      <li>✓ Đảm bảo toàn bộ tài liệu nằm trong khung hình</li>
-                      <li>✓ Ánh sáng đủ và không có bóng che phủ</li>
-                      <li>✓ Giữ ảnh vuông góc với tài liệu</li>
+                      <li>✓ Chụp rõ ràng, không mờ</li>
+                      <li>✓ Toàn bộ tài liệu trong khung hình</li>
+                      <li>✓ Đủ ánh sáng, không bóng che</li>
+                      <li>✓ Vuông góc với tài liệu</li>
                     </ul>
                   </div>
                 </div>
               </div>
 
-              {/* Vi tri */}
               <LocationPicker onLocationChange={setLocation} required={true} />
-
-              {/* Vat dung tiep te */}
               <SupportCategorySelector selected={selectedCategories} onChange={setSelectedCategories} />
 
-              {/* Nut xac minh */}
-              <button
-                type="submit"
-                disabled={!file || isLoading || selectedCategories.length === 0 || !location}
-                className="w-full py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
-              >
+              <button type="submit" disabled={!file || isLoading || selectedCategories.length === 0 || !location}
+                className="w-full py-3 bg-primary text-primary-foreground font-bold rounded-lg hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2">
                 {isLoading ? (<><LoadingSpinner /><span>Đang xác minh...</span></>) : ('Xác Minh Ngay')}
               </button>
             </form>
           </div>
 
-          {/* Thong tin */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-success/10 border border-success/20 rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">Tài liệu được chấp nhận</h3>
+              <h3 className="font-semibold text-foreground mb-2">Được chấp nhận</h3>
               <ul className="text-sm text-muted-foreground space-y-1">
                 <li className="flex items-center gap-2"><CheckCircle size={16} className="text-success" /> Sổ hộ nghèo</li>
               </ul>
             </div>
             <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">Tài liệu không được chấp nhận</h3>
+              <h3 className="font-semibold text-foreground mb-2">Không chấp nhận</h3>
               <ul className="text-sm text-muted-foreground space-y-1">
                 <li className="flex items-center gap-2"><XCircle size={16} className="text-destructive" /> Ảnh cá nhân, selfie</li>
-                <li className="flex items-center gap-2"><XCircle size={16} className="text-destructive" /> Chứng chỉ, bằng cấp</li>
-                <li className="flex items-center gap-2"><XCircle size={16} className="text-destructive" /> Căn cước, hộ chiếu</li>
+                <li className="flex items-center gap-2"><XCircle size={16} className="text-destructive" /> Chứng chỉ, bằng cấp, CCCD</li>
               </ul>
             </div>
           </div>
         </div>
 
-        {/* Ban do Vietnam - hien thi diem do khi xac minh thanh cong */}
         <section className="py-12 border-t border-border mt-12">
           <div className="max-w-4xl mx-auto px-4">
             <div className="flex items-center gap-3 mb-6">
@@ -292,16 +351,11 @@ export default function VerifyPage() {
                 <p className="text-sm text-muted-foreground">Mỗi chấm đỏ là một gia đình đã xác minh thành công</p>
               </div>
             </div>
-            <VietnamMapLive key={mapRefreshKey} height="h-96" />
+            <VietnamMap key={mapRefreshKey} height="h-96" showStats={true} />
           </div>
         </section>
       </main>
-
-      {toast && (
-        <div className="fixed bottom-4 right-4 z-50">
-          <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
-        </div>
-      )}
+      {toast && <div className="fixed bottom-4 right-4 z-50"><Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} /></div>}
       <Footer />
     </>
   )

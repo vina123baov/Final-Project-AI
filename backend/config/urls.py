@@ -1,7 +1,3 @@
-"""
-URL Configuration
-Khoa luan: Phu luc A.2 (API Documentation)
-"""
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings

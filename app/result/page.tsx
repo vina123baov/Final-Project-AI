@@ -27,9 +27,7 @@ export default function ResultPage() {
 
   useEffect(() => {
     const stored = sessionStorage.getItem('verificationData')
-    if (stored) {
-      setData(JSON.parse(stored))
-    }
+    if (stored) setData(JSON.parse(stored))
   }, [])
 
   if (!data) {
@@ -39,6 +37,15 @@ export default function ResultPage() {
   }
 
   const isSuccess = data.status === 'success'
+
+  // FIX: An card "Thoi Gian Xu Ly" khi processing_time_ms <= 0 hoac null
+  const getProcessingTimeDisplay = (): string | null => {
+    const ms = data.processing_time_ms
+    if (!ms || ms <= 0) return null
+    if (ms < 1000) return `${ms}ms`
+    return `${(ms / 1000).toFixed(1)} giây`
+  }
+  const processingTimeDisplay = getProcessingTimeDisplay()
 
   return (
     <>
@@ -60,16 +67,26 @@ export default function ResultPage() {
             </div>
           </div>
 
-          {/* Verification Info */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          {/* Info cards — chi hien card co data thuc */}
+          <div className={`grid grid-cols-1 ${processingTimeDisplay ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4 mb-8`}>
             {data.verification_code && (
-              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Mã Xác Minh</p><p className="font-semibold text-foreground font-mono">{data.verification_code}</p></div>
+              <div className="bg-card border border-border rounded-lg p-4">
+                <p className="text-xs text-muted-foreground mb-1">Mã Xác Minh</p>
+                <p className="font-semibold text-foreground font-mono">{data.verification_code}</p>
+              </div>
             )}
-            {data.confidence !== null && (
-              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Độ Tin Cậy</p><p className="font-semibold text-foreground">{(data.confidence * 100).toFixed(1)}%</p></div>
+            {data.confidence !== null && data.confidence !== undefined && (
+              <div className="bg-card border border-border rounded-lg p-4">
+                <p className="text-xs text-muted-foreground mb-1">Độ Tin Cậy</p>
+                <p className="font-semibold text-foreground">{(data.confidence * 100).toFixed(1)}%</p>
+              </div>
             )}
-            {data.processing_time_ms && (
-              <div className="bg-card border border-border rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Thời Gian Xử Lý</p><p className="font-semibold text-foreground">{(data.processing_time_ms / 1000).toFixed(1)} giây</p></div>
+            {/* FIX: chi hien khi co thoi gian thuc > 0 */}
+            {processingTimeDisplay && (
+              <div className="bg-card border border-border rounded-lg p-4">
+                <p className="text-xs text-muted-foreground mb-1">Thời Gian Xử Lý</p>
+                <p className="font-semibold text-foreground">{processingTimeDisplay}</p>
+              </div>
             )}
           </div>
 

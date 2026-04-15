@@ -1,8 +1,3 @@
-"""
-Supabase Service Layer
-Ket noi voi Supabase database.
-Khop voi: ERD Hinh 2.3
-"""
 import os
 import logging
 from typing import Optional

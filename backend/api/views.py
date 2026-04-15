@@ -6,10 +6,11 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from django.contrib.auth.models import User
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes, throttle_classes
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle, AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .serializers import VerifyImageSerializer
@@ -23,7 +24,6 @@ from .supabase_service import (
     get_all_verification_requests,
     admin_review_request,
     create_audit_log,
-    upload_image_to_storage,
     get_all_users,
     toggle_user_status,
 )
@@ -33,7 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# AUTH ENDPOINTS
+# Rate Limiting (Section 2.1.2: gioi han 10 request/user/ngay)
+# ============================================================================
+
+class VerifyRateThrottle(UserRateThrottle):
+    rate = '10/day'
+    scope = 'verify'
+
+class VerifyAnonRateThrottle(AnonRateThrottle):
+    rate = '5/day'
+    scope = 'verify_anon'
+
+
+# ============================================================================
+# AUTH ENDPOINTS (UC01, UC02)
 # ============================================================================
 
 @api_view(['POST'])
@@ -41,42 +54,23 @@ logger = logging.getLogger(__name__)
 def auth_login(request):
     email = request.data.get('email', '')
     password = request.data.get('password', '')
-
     if not email or not password:
-        return Response(
-            {'detail': 'Vui long nhap email va mat khau'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
+        return Response({'detail': 'Vui long nhap email va mat khau'}, status=status.HTTP_400_BAD_REQUEST)
     try:
         user = User.objects.get(email=email)
         if not user.check_password(password):
-            return Response(
-                {'detail': 'Email hoac mat khau khong dung'},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            return Response({'detail': 'Email hoac mat khau khong dung'}, status=status.HTTP_401_UNAUTHORIZED)
         if not user.is_active:
-            return Response(
-                {'detail': 'Tai khoan da bi khoa'},
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({'detail': 'Tai khoan da bi khoa'}, status=status.HTTP_403_FORBIDDEN)
     except User.DoesNotExist:
-        return Response(
-            {'detail': 'Email hoac mat khau khong dung'},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
+        return Response({'detail': 'Email hoac mat khau khong dung'}, status=status.HTTP_401_UNAUTHORIZED)
 
     refresh = RefreshToken.for_user(user)
-
+    create_audit_log(str(user.id), 'login', 'users', str(user.id))
     return Response({
         'access': str(refresh.access_token),
         'refresh': str(refresh),
-        'user': {
-            'id': str(user.id),
-            'email': user.email,
-            'full_name': user.get_full_name(),
-            'is_staff': user.is_staff,
-        }
+        'user': {'id': str(user.id), 'email': user.email, 'full_name': user.get_full_name(), 'is_staff': user.is_staff}
     })
 
 
@@ -87,31 +81,17 @@ def auth_register(request):
     email = request.data.get('email', '')
     phone = request.data.get('phone', '')
     password = request.data.get('password', '')
-
     if not email or not password:
-        return Response(
-            {'detail': 'Vui long nhap email va mat khau'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
+        return Response({'detail': 'Vui long nhap email va mat khau'}, status=status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(email=email).exists():
-        return Response(
-            {'detail': 'Email da duoc su dung'},
-            status=status.HTTP_409_CONFLICT
-        )
-
+        return Response({'detail': 'Email da duoc su dung'}, status=status.HTTP_409_CONFLICT)
     user = User.objects.create_user(
-        username=email,
-        email=email,
-        password=password,
+        username=email, email=email, password=password,
         first_name=full_name.split(' ')[0] if full_name else '',
         last_name=' '.join(full_name.split(' ')[1:]) if full_name and len(full_name.split(' ')) > 1 else '',
     )
-
-    return Response({
-        'message': 'Dang ky thanh cong!',
-        'user_id': str(user.id),
-    }, status=status.HTTP_201_CREATED)
+    create_audit_log(str(user.id), 'register', 'users', str(user.id))
+    return Response({'message': 'Dang ky thanh cong!', 'user_id': str(user.id)}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
@@ -119,19 +99,15 @@ def auth_register(request):
 def auth_me(request):
     user = request.user
     return Response({
-        'id': str(user.id),
-        'email': user.email,
-        'full_name': user.get_full_name(),
-        'phone': '',
-        'role': 'admin' if user.is_staff else 'user',
-        'is_active': user.is_active,
-        'created_at': user.date_joined.isoformat(),
+        'id': str(user.id), 'email': user.email, 'full_name': user.get_full_name(),
+        'phone': '', 'role': 'admin' if user.is_staff else 'user',
+        'is_active': user.is_active, 'created_at': user.date_joined.isoformat(),
         'last_sign_in_at': user.last_login.isoformat() if user.last_login else None,
     })
 
 
 # ============================================================================
-# POST /api/verify/ — FIXED: chi insert cac cot co trong Supabase
+# POST /api/verify/ — UC03 (FULL FIX)
 # ============================================================================
 
 @api_view(['POST'])
@@ -140,8 +116,8 @@ def auth_me(request):
 def verify_image(request):
     """
     POST /api/verify/
-    FIX: Chi insert cac cot thuc su ton tai trong bang verification_requests.
-    Neu cot nao khong co trong Supabase -> bo qua, khong crash.
+    Nhan anh + vi tri + vat dung tiep te, chay AI Pipeline 7 buoc, luu tat ca vao Supabase.
+    Rate limit: 10 req/user/ngay (Section 2.1.2)
     """
     serializer = VerifyImageSerializer(data=request.data)
     if not serializer.is_valid():
@@ -167,6 +143,17 @@ def verify_image(request):
     latitude = serializer.validated_data.get('latitude')
     longitude = serializer.validated_data.get('longitude')
     address = serializer.validated_data.get('address', '')
+    # MOI: lay support_categories tu request
+    support_categories = request.data.getlist('support_categories', [])
+    if not support_categories:
+        # Fallback: thu lay dang JSON string
+        cats_str = request.data.get('support_categories', '')
+        if cats_str:
+            import json
+            try:
+                support_categories = json.loads(cats_str)
+            except (json.JSONDecodeError, TypeError):
+                support_categories = [c.strip() for c in cats_str.split(',') if c.strip()]
 
     try:
         # Luu anh tam
@@ -182,7 +169,7 @@ def verify_image(request):
 
         logger.info(f"Image saved: {temp_path} ({image_file.size} bytes)")
 
-        # Chay AI Pipeline
+        # Chay AI Pipeline 7 buoc
         pipeline_result = run_pipeline(temp_path)
 
         logger.info(
@@ -192,74 +179,67 @@ def verify_image(request):
             f"time={pipeline_result.get('processing_time_ms', 0)}ms"
         )
 
-        # Luu vao Supabase neu co user_id
+        # Luu vao Supabase
         request_id = None
         verification_code = None
 
         if user_id:
             verification_code = f"VF-{uuid.uuid4().hex[:8].upper()}"
 
-            # ============================================================
-            # FIX: Chi insert cac cot DA TON TAI trong bang Supabase
-            # Neu ban da them cac cot moi vao Supabase, co the uncomment
-            # ============================================================
+            # Day du cac cot theo ERD Bang 2.3
             db_data = {
                 'user_id': user_id,
                 'image_path': image_file.name,
+                'original_filename': image_file.name,
                 'status': pipeline_result['status'],
                 'result_type': pipeline_result.get('result_type'),
                 'verification_code': verification_code,
+                'expires_at': (datetime.utcnow() + timedelta(days=30)).isoformat(),
+                # Blur
                 'blur_score': pipeline_result.get('blur_score', 0),
+                'is_blurry': pipeline_result.get('is_blurry', False),
+                # Classification
                 'predicted_class': pipeline_result.get('predicted_class'),
                 'confidence': pipeline_result.get('confidence'),
+                'passed_confidence_check': pipeline_result.get('passed_confidence_check', False),
+                # Stamp detection
+                'stamp_detected': pipeline_result.get('stamp_detected', False),
+                'stamp_score': pipeline_result.get('stamp_score', 0.0),
+                # Forgery detection
+                'forgery_score': pipeline_result.get('forgery_score', 0.0),
+                # OCR
                 'extracted_text': pipeline_result.get('extracted_text'),
+                'ocr_confidence': pipeline_result.get('ocr_confidence'),
                 'household_name': pipeline_result.get('household_name'),
                 'household_address': pipeline_result.get('household_address'),
                 'household_id_number': pipeline_result.get('household_id_number'),
+                'province': pipeline_result.get('province'),
+                # Thoi gian
                 'processing_time_ms': pipeline_result.get('processing_time_ms', 0),
                 'message': pipeline_result.get('message', ''),
                 'need_retry': pipeline_result.get('need_retry', True),
-                # Vi tri nguoi dung
+                # Vi tri
                 'user_latitude': latitude,
                 'user_longitude': longitude,
                 'user_location_address': address,
+                # MOI: vat dung tiep te
+                'support_categories': support_categories if support_categories else None,
             }
 
-            # Thu insert, neu loi thi bo bot cac cot khong ton tai
-            try:
-                db_record = create_verification_request(db_data)
-                request_id = db_record.get('id')
-            except Exception as db_err:
-                logger.warning(f"Insert full data failed: {db_err}")
-                # Fallback: chi insert cac cot co ban nhat
-                minimal_data = {
-                    'user_id': user_id,
-                    'image_path': image_file.name,
-                    'status': pipeline_result['status'],
-                    'result_type': pipeline_result.get('result_type'),
-                    'verification_code': verification_code,
-                    'blur_score': pipeline_result.get('blur_score', 0),
-                    'predicted_class': pipeline_result.get('predicted_class'),
-                    'confidence': pipeline_result.get('confidence'),
-                    'extracted_text': pipeline_result.get('extracted_text'),
-                    'processing_time_ms': pipeline_result.get('processing_time_ms', 0),
-                    'message': pipeline_result.get('message', ''),
-                }
-                try:
-                    db_record = create_verification_request(minimal_data)
-                    request_id = db_record.get('id')
-                except Exception as db_err2:
-                    logger.error(f"Insert minimal data also failed: {db_err2}")
-                    # Van tra ve ket qua pipeline, chi khong luu DB
+            if pipeline_result['status'] == 'success':
+                db_data['verified_at'] = datetime.utcnow().isoformat()
 
-            try:
-                create_audit_log(user_id, 'verify_image', 'verification_requests', request_id, {
-                    'verification_code': verification_code,
-                    'result_type': pipeline_result.get('result_type'),
-                    'confidence': pipeline_result.get('confidence'),
-                })
-            except Exception:
-                pass
+            # Thu insert day du, fallback neu thieu cot
+            db_record = _safe_insert(db_data)
+            request_id = db_record.get('id') if db_record else None
+
+            create_audit_log(user_id, 'verify_image', 'verification_requests', request_id, {
+                'verification_code': verification_code,
+                'result_type': pipeline_result.get('result_type'),
+                'confidence': pipeline_result.get('confidence'),
+                'processing_time_ms': pipeline_result.get('processing_time_ms'),
+                'support_categories': support_categories,
+            })
 
         # Xoa file tam
         if os.path.exists(temp_path):
@@ -290,6 +270,7 @@ def verify_image(request):
                 'user_latitude': latitude,
                 'user_longitude': longitude,
                 'user_location_address': address,
+                'support_categories': support_categories,
             }
         })
 
@@ -307,8 +288,85 @@ def verify_image(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _safe_insert(db_data: dict) -> dict:
+    """Insert voi fallback — bo bot cot neu Supabase chua co."""
+    try:
+        return create_verification_request(db_data)
+    except Exception as e1:
+        logger.warning(f"Full insert failed: {e1}, trying without optional cols")
+        # Bo cac cot co the chua ton tai
+        optional_cols = [
+            'forgery_score', 'stamp_detected', 'stamp_score', 'is_blurry',
+            'passed_confidence_check', 'ocr_confidence', 'province',
+            'original_filename', 'image_storage_path', 'verified_at',
+            'expires_at', 'support_categories',
+        ]
+        reduced = {k: v for k, v in db_data.items() if k not in optional_cols}
+        try:
+            return create_verification_request(reduced)
+        except Exception as e2:
+            logger.error(f"Reduced insert also failed: {e2}")
+            # Minimal insert
+            minimal = {
+                'user_id': db_data.get('user_id'),
+                'image_path': db_data.get('image_path', ''),
+                'status': db_data.get('status', 'failed'),
+                'result_type': db_data.get('result_type'),
+                'verification_code': db_data.get('verification_code'),
+                'message': db_data.get('message', ''),
+            }
+            try:
+                return create_verification_request(minimal)
+            except Exception as e3:
+                logger.error(f"Minimal insert failed: {e3}")
+                return {}
+
+
 # ============================================================================
-# GET /api/result/<id>/
+# GET /api/verified-locations/ — vi tri cac ho da xac minh (cho map)
+# ============================================================================
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_verified_locations(request):
+    try:
+        from .supabase_service import get_supabase_client
+        supabase = get_supabase_client()
+        result = (
+            supabase.table('verification_requests')
+            .select('id, verification_code, household_name, household_address, user_latitude, user_longitude, user_location_address, status, created_at, support_categories')
+            .eq('status', 'success')
+            .not_.is_('user_latitude', 'null')
+            .not_.is_('user_longitude', 'null')
+            .order('created_at', desc=True)
+            .limit(200)
+            .execute()
+        )
+        return Response({'data': result.data or [], 'count': len(result.data or [])})
+    except Exception as e:
+        logger.error(f"get_verified_locations error: {e}")
+        # Fallback: try without support_categories column
+        try:
+            from .supabase_service import get_supabase_client
+            supabase = get_supabase_client()
+            result = (
+                supabase.table('verification_requests')
+                .select('id, verification_code, household_name, household_address, user_latitude, user_longitude, user_location_address, status, created_at')
+                .eq('status', 'success')
+                .not_.is_('user_latitude', 'null')
+                .not_.is_('user_longitude', 'null')
+                .order('created_at', desc=True)
+                .limit(200)
+                .execute()
+            )
+            return Response({'data': result.data or [], 'count': len(result.data or [])})
+        except Exception as e2:
+            logger.error(f"get_verified_locations fallback error: {e2}")
+            return Response({'data': [], 'count': 0})
+
+
+# ============================================================================
+# GET /api/result/<id>/ — UC04
 # ============================================================================
 
 @api_view(['GET'])
@@ -321,7 +379,7 @@ def get_result(request, request_id):
 
 
 # ============================================================================
-# GET /api/history/
+# GET /api/history/ — UC05
 # ============================================================================
 
 @api_view(['GET'])
@@ -331,47 +389,15 @@ def get_history(request):
         user_id = str(request.user.id)
     else:
         user_id = request.query_params.get('user_id')
-
     if not user_id:
         return Response({'error': 'Thieu user_id'}, status=status.HTTP_400_BAD_REQUEST)
-
     limit = int(request.query_params.get('limit', 50))
     history = get_user_verification_history(user_id, limit=limit)
     return Response({'data': history, 'count': len(history)})
 
 
 # ============================================================================
-# GET /api/verified-locations/ — NEW: lay vi tri cac ho da xac minh thanh cong
-# ============================================================================
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_verified_locations(request):
-    """
-    Tra ve danh sach cac ho da xac minh thanh cong voi vi tri,
-    de hien thi tren ban do Vietnam.
-    """
-    try:
-        from .supabase_service import get_supabase_client
-        supabase = get_supabase_client()
-        result = (
-            supabase.table('verification_requests')
-            .select('id, verification_code, household_name, household_address, user_latitude, user_longitude, user_location_address, status, created_at')
-            .eq('status', 'success')
-            .not_.is_('user_latitude', 'null')
-            .not_.is_('user_longitude', 'null')
-            .order('created_at', desc=True)
-            .limit(100)
-            .execute()
-        )
-        return Response({'data': result.data or [], 'count': len(result.data or [])})
-    except Exception as e:
-        logger.error(f"get_verified_locations error: {e}")
-        return Response({'data': [], 'count': 0})
-
-
-# ============================================================================
-# ADMIN ENDPOINTS
+# ADMIN ENDPOINTS (UC06, UC07, UC08)
 # ============================================================================
 
 @api_view(['GET'])
@@ -381,7 +407,6 @@ def admin_dashboard(request):
     errors = get_error_distribution()
     return Response({'dashboard': dashboard, 'error_distribution': errors})
 
-
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_requests(request):
@@ -389,7 +414,6 @@ def admin_requests(request):
     limit = int(request.query_params.get('limit', 100))
     requests_list = get_all_verification_requests(status=filter_status, limit=limit)
     return Response({'data': requests_list, 'count': len(requests_list)})
-
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -400,15 +424,14 @@ def admin_review(request):
     if not request_id or not admin_id:
         return Response({'error': 'Thieu request_id hoac admin_id'}, status=status.HTTP_400_BAD_REQUEST)
     result = admin_review_request(int(request_id), admin_id, notes)
+    create_audit_log(admin_id, 'admin_review', 'verification_requests', request_id, {'notes': notes})
     return Response({'data': result})
-
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_users(request):
     users = get_all_users()
     return Response({'data': users, 'count': len(users)})
-
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -418,6 +441,8 @@ def admin_toggle_user(request):
     if not user_id:
         return Response({'error': 'Thieu user_id'}, status=status.HTTP_400_BAD_REQUEST)
     result = toggle_user_status(user_id, is_active)
+    admin_id = str(request.user.id) if request.user and request.user.is_authenticated else 'system'
+    create_audit_log(admin_id, 'toggle_user', 'users', user_id, {'is_active': is_active})
     return Response({'data': result})
 
 
@@ -437,4 +462,5 @@ def health_check(request):
         'blur_threshold': getattr(settings, 'BLUR_THRESHOLD', 100),
         'confidence_threshold': getattr(settings, 'CONFIDENCE_THRESHOLD', 0.7),
         'supabase_connected': bool(settings.SUPABASE_URL),
+        'rate_limit': '10/day per user',
     })

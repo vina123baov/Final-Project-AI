@@ -1,7 +1,3 @@
-"""
-Django Settings
-Khoa luan: Section 2.2.1 (Kien truc), Section 4.1.1 (Moi truong)
-"""
 import os
 from pathlib import Path
 from datetime import timedelta
@@ -85,6 +81,12 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
+    'DEFAULT_THROTTLE_RATES': {
+    'user': '100/day',
+    'anon': '50/day', 
+    'verify': '10/day',
+    'verify_anon': '5/day',
+    },
 }
 
 # --- JWT (YC 2.1.2: Bao mat) ---
