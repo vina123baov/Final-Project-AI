@@ -1,16 +1,3 @@
-"""
-Buoc 3 (cai tien): Forgery Detection
-Khoa luan: Section 2.4.9
-
-Phat hien anh bi chinh sua bang Photoshop hoac cong cu khac:
-    1. Error Level Analysis (ELA): phat hien vung bi chinh sua
-    2. Metadata Analysis: kiem tra EXIF, double JPEG compression
-
-Forgery Scoring:
-    forgery_score > 0.7  -> tu choi
-    0.4 <= score <= 0.7  -> admin review
-    score < 0.4          -> tiep tuc pipeline
-"""
 import cv2
 import numpy as np
 from PIL import Image, ExifTags
@@ -18,6 +5,9 @@ import io
 import logging
 
 logger = logging.getLogger(__name__)
+
+# TOI UU: Resize anh lon truoc khi chay ELA
+MAX_IMAGE_DIMENSION = 1024
 
 
 def detect_forgery(image_input) -> dict:
@@ -52,11 +42,22 @@ def detect_forgery(image_input) -> dict:
 
         pil_image = pil_image.convert('RGB')
 
+        # --- TOI UU: Resize neu anh qua lon (tiet kiem thoi gian ELA) ---
+        original_size = pil_image.size
+        if max(original_size) > MAX_IMAGE_DIMENSION:
+            ratio = MAX_IMAGE_DIMENSION / max(original_size)
+            new_size = (int(original_size[0] * ratio), int(original_size[1] * ratio))
+            pil_image = pil_image.resize(new_size, Image.LANCZOS)
+            logger.debug(f"Resized image from {original_size} to {new_size} for forgery detection")
+
         # --- Chay ELA ---
         ela_result = _error_level_analysis(pil_image)
 
-        # --- Chay Metadata Analysis ---
-        meta_result = _metadata_analysis(pil_image, file_path)
+        # --- Chay Metadata Analysis (dung anh goc neu co file path) ---
+        if file_path:
+            meta_result = _metadata_analysis(Image.open(file_path), file_path)
+        else:
+            meta_result = _metadata_analysis(pil_image, None)
 
         # --- Tinh forgery_score tong hop ---
         ela_score = ela_result.get('ela_score', 0.0)
@@ -114,24 +115,23 @@ def _error_level_analysis(pil_image: Image.Image, quality: int = 95) -> dict:
         buffer.seek(0)
         resaved = Image.open(buffer)
 
-        # Buoc 2: Tinh hieu tuyet doi
-        original_arr = np.array(pil_image, dtype=np.float64)
-        resaved_arr = np.array(resaved, dtype=np.float64)
+        # Buoc 2: Tinh hieu tuyet doi (dung float32 thay vi float64 - nhanh hon 2x)
+        original_arr = np.array(pil_image, dtype=np.float32)
+        resaved_arr = np.array(resaved, dtype=np.float32)
         ela_image = np.abs(original_arr - resaved_arr)
 
         # Buoc 3: Phan tich ELA
-        ela_mean = np.mean(ela_image)
-        ela_std = np.std(ela_image)
-        ela_max = np.max(ela_image)
+        ela_mean = float(np.mean(ela_image))
+        ela_std = float(np.std(ela_image))
+        ela_max = float(np.max(ela_image))
 
         # Tinh ty le vung co ELA cao (nghi chinh sua)
         threshold = ela_mean + 2 * ela_std
-        suspicious_pixels = np.sum(ela_image > threshold)
+        suspicious_pixels = int(np.sum(ela_image > threshold))
         total_pixels = ela_image.size
         suspicious_ratio = suspicious_pixels / total_pixels if total_pixels > 0 else 0
 
         # Chuyen thanh score 0-1
-        # std > 15 bat dau nghi ngo, std > 30 kha chac chan
         ela_score = 0.0
         if ela_std > 30:
             ela_score = 0.8 + min(0.2, (ela_std - 30) / 50)
