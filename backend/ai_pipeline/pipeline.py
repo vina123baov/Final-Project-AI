@@ -24,15 +24,14 @@ MESSAGES = {
 FORGERY_REJECT_THRESHOLD = 0.7
 FORGERY_REVIEW_THRESHOLD = 0.4
 
+REJECT_NON_SHN_THRESHOLD = 0.30
+SHN_MAX_PROB_FOR_REJECT = 0.30 
+
 
 def run_pipeline(image_path: str) -> dict:
     """
     Chay toan bo pipeline xu ly anh.
-
     TOI UU: Dao thu tu buoc de EARLY EXIT nhanh cho anh khong hop le.
-    - Classification chay NGAY sau Blur check
-    - Forgery detection va OCR CHI chay khi da xac dinh la so_ho_ngheo
-    - Giam thoi gian xu ly tu ~60s xuong ~1-2s cho anh khong lien quan
     """
     start_time = time.time()
     pipeline_details = {}
@@ -41,9 +40,6 @@ def run_pipeline(image_path: str) -> dict:
     confidence_threshold = classifier.confidence_threshold if classifier.is_loaded else getattr(settings, 'CONFIDENCE_THRESHOLD', 0.7)
     blur_threshold = classifier.blur_threshold if classifier.is_loaded else getattr(settings, 'BLUR_THRESHOLD', 100)
 
-    # ==================================================================
-    # BUOC 1: Blur Detection (nhanh ~50-100ms)
-    # ==================================================================
     logger.info("Pipeline Step 1: Blur Detection")
     step_start = time.time()
 
@@ -53,19 +49,21 @@ def run_pipeline(image_path: str) -> dict:
         'time_ms': round((time.time() - step_start) * 1000),
     }
 
-    if blur_result['is_blurry']:
+    blur_score = blur_result['blur_score']
+    is_very_blurry = blur_score < (blur_threshold * 0.5)  # < 50 neu threshold = 100
+
+    if is_very_blurry:
         total_time = round((time.time() - start_time) * 1000)
-        logger.info(f"Pipeline STOPPED at Step 1: Image is blurry (score={blur_result['blur_score']})")
+        logger.info(f"Pipeline STOPPED at Step 1: Image very blurry (score={blur_score})")
         return _build_result(
             status='failed', result_type='blur',
-            blur_score=blur_result['blur_score'], is_blurry=True,
+            blur_score=blur_score, is_blurry=True,
             message=MESSAGES['blur'], need_retry=True,
             processing_time_ms=total_time, pipeline_details=pipeline_details,
         )
 
     # ==================================================================
-    # BUOC 2: Document Classification (nhanh ~200-500ms voi GPU, ~1s voi CPU)
-    # Chay TRUOC Forgery Detection de EARLY EXIT anh khong lien quan
+    # BUOC 2: Document Classification
     # ==================================================================
     logger.info("Pipeline Step 2: Document Classification")
     step_start = time.time()
@@ -78,11 +76,78 @@ def run_pipeline(image_path: str) -> dict:
 
     predicted_class = classification_result['predicted_class']
     confidence = classification_result['confidence']
+    all_probs = classification_result.get('all_probabilities', {})
+
+    p_shn = all_probs.get('so_ho_ngheo', 0.0)
+    p_gtk = all_probs.get('giay_to_khac', 0.0)
+    p_akl = all_probs.get('anh_khong_lien_quan', 0.0)
+
+    # Đảm bảo fallback lấy tỷ lệ nếu model không nhả ra all_probs
+    if not all_probs:
+        if predicted_class == 'so_ho_ngheo': p_shn = confidence
+        elif predicted_class == 'giay_to_khac': p_gtk = confidence
+        elif predicted_class == 'anh_khong_lien_quan': p_akl = confidence
+
+    logger.info(
+        f"Classification: predicted={predicted_class}, conf={confidence:.3f} | "
+        f"P(shn)={p_shn:.3f}, P(gtk)={p_gtk:.3f}, P(akl)={p_akl:.3f}"
+    )
 
     # ==================================================================
-    # BUOC 3: Confidence Check
+    # BUOC 3: Smart Rejection & Class Handling
+    # Xử lý dứt điểm rác và giấy tờ sai TRƯỚC KHI bị vướng vào low_confidence
     # ==================================================================
-    logger.info(f"Pipeline Step 3: Confidence Check ({confidence} vs {confidence_threshold})")
+    logger.info("Pipeline Step 3: Smart Rejection Check")
+
+    # Xử lý: GIẤY TỜ KHÁC (Ưu tiên cao nhất)
+    # Dù model đang đoán là gì, chỉ cần p_gtk >= 0.30 VÀ chưa đủ tự tin để là Sổ Hộ Nghèo (< 0.70)
+    # Thì ta bẻ lái chốt luôn đây là giấy tờ khác.
+    if (predicted_class == 'giay_to_khac') or (p_gtk >= REJECT_NON_SHN_THRESHOLD and p_shn < confidence_threshold):
+        total_time = round((time.time() - start_time) * 1000)
+        logger.info(f"Pipeline EARLY EXIT: giay_to_khac (p_gtk={p_gtk:.3f}, p_shn={p_shn:.3f})")
+        return _build_result(
+            status='failed', result_type='wrong_doc',
+            blur_score=blur_score, is_blurry=False,
+            predicted_class='giay_to_khac', 
+            confidence=max(confidence, p_gtk), # Lấy điểm cao nhất để frontend hiển thị đúng
+            passed_confidence_check=True,
+            message=MESSAGES['giay_to_khac'], need_retry=True,
+            processing_time_ms=total_time, pipeline_details=pipeline_details,
+        )
+
+    # Xử lý: ẢNH KHÔNG LIÊN QUAN
+    if (predicted_class == 'anh_khong_lien_quan') or (p_akl >= REJECT_NON_SHN_THRESHOLD and p_shn < confidence_threshold):
+        total_time = round((time.time() - start_time) * 1000)
+        logger.info(f"Pipeline EARLY EXIT: anh_khong_lien_quan (p_akl={p_akl:.3f}, p_shn={p_shn:.3f})")
+        return _build_result(
+            status='failed', result_type='invalid',
+            blur_score=blur_score, is_blurry=False,
+            predicted_class='anh_khong_lien_quan', 
+            confidence=max(confidence, p_akl),
+            passed_confidence_check=True,
+            message=MESSAGES['anh_khong_lien_quan'], need_retry=True,
+            processing_time_ms=total_time, pipeline_details=pipeline_details,
+        )
+
+    # ==================================================================
+    # BUOC 4: Kiem tra mo nhe (Chi chan neu no la so ho ngheo that nhung mo)
+    # ==================================================================
+    if blur_result['is_blurry']:
+        total_time = round((time.time() - start_time) * 1000)
+        logger.info(f"Pipeline STOPPED: Image moderately blurry (score={blur_score})")
+        return _build_result(
+            status='failed', result_type='blur',
+            blur_score=blur_score, is_blurry=True,
+            predicted_class=predicted_class, confidence=confidence,
+            message=MESSAGES['blur'], need_retry=True,
+            processing_time_ms=total_time, pipeline_details=pipeline_details,
+        )
+
+    # ==================================================================
+    # BUOC 5: Confidence Check 
+    # (Đến đây chắc chắn chỉ còn Sổ Hộ Nghèo, nếu < 0.7 thì báo low_confidence)
+    # ==================================================================
+    logger.info(f"Pipeline Step 5: Confidence Check ({confidence:.3f} vs {confidence_threshold})")
     passed_confidence = confidence >= confidence_threshold
     pipeline_details['confidence_check'] = {
         'confidence': confidence,
@@ -92,10 +157,10 @@ def run_pipeline(image_path: str) -> dict:
 
     if not passed_confidence:
         total_time = round((time.time() - start_time) * 1000)
-        logger.info(f"Pipeline STOPPED at Step 3: Low confidence ({confidence})")
+        logger.info(f"Pipeline STOPPED at Step 5: Low confidence ({confidence:.3f})")
         return _build_result(
             status='failed', result_type='low_confidence',
-            blur_score=blur_result['blur_score'], is_blurry=False,
+            blur_score=blur_score, is_blurry=False,
             predicted_class=predicted_class, confidence=confidence,
             passed_confidence_check=False,
             message=MESSAGES['low_confidence'], need_retry=True,
@@ -104,44 +169,9 @@ def run_pipeline(image_path: str) -> dict:
         )
 
     # ==================================================================
-    # BUOC 4: Class Handling — EARLY EXIT cho anh khong phai so ho ngheo
-    # Khong can chay Forgery/Stamp/OCR — tiet kiem ~60s cho anh phong canh!
+    # BUOC 6: Forgery Detection
     # ==================================================================
-    logger.info(f"Pipeline Step 4: Class Handling -> {predicted_class}")
-
-    if predicted_class == 'anh_khong_lien_quan':
-        total_time = round((time.time() - start_time) * 1000)
-        logger.info(f"Pipeline EARLY EXIT: anh_khong_lien_quan in {total_time}ms")
-        return _build_result(
-            status='failed', result_type='invalid',
-            blur_score=blur_result['blur_score'], is_blurry=False,
-            predicted_class=predicted_class, confidence=confidence,
-            passed_confidence_check=True,
-            message=MESSAGES['anh_khong_lien_quan'], need_retry=True,
-            processing_time_ms=total_time, pipeline_details=pipeline_details,
-        )
-
-    if predicted_class == 'giay_to_khac':
-        total_time = round((time.time() - start_time) * 1000)
-        logger.info(f"Pipeline EARLY EXIT: giay_to_khac in {total_time}ms")
-        return _build_result(
-            status='failed', result_type='wrong_doc',
-            blur_score=blur_result['blur_score'], is_blurry=False,
-            predicted_class=predicted_class, confidence=confidence,
-            passed_confidence_check=True,
-            message=MESSAGES['giay_to_khac'], need_retry=True,
-            processing_time_ms=total_time, pipeline_details=pipeline_details,
-        )
-
-    # ==================================================================
-    # DEN DAY NGHIA LA predicted_class == 'so_ho_ngheo'
-    # Chi gio moi chay cac buoc nang: Forgery, Stamp, OCR
-    # ==================================================================
-
-    # ==================================================================
-    # BUOC 5: Forgery Detection (~1-3s, chi chay cho so ho ngheo)
-    # ==================================================================
-    logger.info("Pipeline Step 5: Forgery Detection")
+    logger.info("Pipeline Step 6: Forgery Detection")
     step_start = time.time()
 
     forgery_result = detect_forgery(image_path)
@@ -154,10 +184,10 @@ def run_pipeline(image_path: str) -> dict:
 
     if forgery_score > FORGERY_REJECT_THRESHOLD:
         total_time = round((time.time() - start_time) * 1000)
-        logger.info(f"Pipeline STOPPED at Step 5: Forgery detected (score={forgery_score})")
+        logger.info(f"Pipeline STOPPED at Step 6: Forgery detected (score={forgery_score})")
         return _build_result(
             status='failed', result_type='forgery',
-            blur_score=blur_result['blur_score'], is_blurry=False,
+            blur_score=blur_score, is_blurry=False,
             predicted_class=predicted_class, confidence=confidence,
             passed_confidence_check=True,
             forgery_score=forgery_score,
@@ -165,13 +195,12 @@ def run_pipeline(image_path: str) -> dict:
             processing_time_ms=total_time, pipeline_details=pipeline_details,
         )
 
-    # Ghi nhan neu nghi ngo (0.4-0.7) nhung van tiep tuc pipeline
     needs_review = forgery_score >= FORGERY_REVIEW_THRESHOLD
 
     # ==================================================================
-    # BUOC 6: Stamp Detection (~200-500ms)
+    # BUOC 7: Stamp Detection
     # ==================================================================
-    logger.info("Pipeline Step 6: Stamp Detection")
+    logger.info("Pipeline Step 7: Stamp Detection")
     step_start = time.time()
 
     stamp_result = detect_stamp(image_path)
@@ -192,13 +221,12 @@ def run_pipeline(image_path: str) -> dict:
         'formula': '0.7 * model_conf + 0.3 * stamp_score',
     }
 
-    # Neu final_confidence giam duoi threshold sau aggregation
     if final_confidence < confidence_threshold:
         total_time = round((time.time() - start_time) * 1000)
         logger.info(f"Pipeline: final_confidence ({final_confidence}) < threshold after stamp aggregation")
         return _build_result(
             status='pending', result_type='review',
-            blur_score=blur_result['blur_score'], is_blurry=False,
+            blur_score=blur_score, is_blurry=False,
             predicted_class=predicted_class, confidence=final_confidence,
             passed_confidence_check=True,
             stamp_detected=stamp_detected, stamp_score=stamp_score,
@@ -210,9 +238,9 @@ def run_pipeline(image_path: str) -> dict:
         )
 
     # ==================================================================
-    # BUOC 7: OCR (VietOCR) — CHI chay khi da chac chan la so ho ngheo
+    # BUOC 8: OCR (VietOCR)
     # ==================================================================
-    logger.info("Pipeline Step 7: OCR (VietOCR)")
+    logger.info("Pipeline Step 8: OCR (VietOCR)")
     step_start = time.time()
 
     ocr_result = extract_text(image_path)
@@ -225,12 +253,11 @@ def run_pipeline(image_path: str) -> dict:
 
     total_time = round((time.time() - start_time) * 1000)
 
-    # Neu forgery nghi ngo (0.4-0.7) -> pending review
     if needs_review:
         logger.info(f"Pipeline COMPLETED with REVIEW needed (forgery={forgery_score}) in {total_time}ms")
         return _build_result(
             status='pending', result_type='review',
-            blur_score=blur_result['blur_score'], is_blurry=False,
+            blur_score=blur_score, is_blurry=False,
             predicted_class=predicted_class, confidence=final_confidence,
             passed_confidence_check=True,
             extracted_text=ocr_result.get('extracted_text'),
@@ -249,7 +276,7 @@ def run_pipeline(image_path: str) -> dict:
     logger.info(f"Pipeline COMPLETED successfully in {total_time}ms")
     return _build_result(
         status='success', result_type='success',
-        blur_score=blur_result['blur_score'], is_blurry=False,
+        blur_score=blur_score, is_blurry=False,
         predicted_class=predicted_class, confidence=final_confidence,
         passed_confidence_check=True,
         extracted_text=ocr_result.get('extracted_text'),

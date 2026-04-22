@@ -8,15 +8,19 @@ def check_blur(image_input, threshold_override: int = None) -> dict:
     """
     Kiem tra anh co bi mo hay khong bang Laplacian Variance.
 
+    FIX: Them bo resize anh ve kich thuoc chuan truoc khi tinh Laplacian.
+         Anh chup gan (CCCD, anh phong to) co resolution cao + vung bong -> 
+         Laplacian variance thap a ao. Resize ve 800px giup chuan hoa.
+
     Args:
         image_input: duong dan file (str), numpy array, hoac PIL Image
 
     Returns:
         {
-            'is_blurry': bool,       # True neu blur_score < threshold
-            'blur_score': float,     # Laplacian Variance score
-            'threshold': int,        # Nguong su dung (mac dinh 100)
-            'message': str           # Thong bao cho nguoi dung
+            'is_blurry': bool,
+            'blur_score': float,
+            'threshold': int,
+            'message': str,
         }
 
     Cong thuc (Section 1.5.2):
@@ -47,6 +51,16 @@ def check_blur(image_input, threshold_override: int = None) -> dict:
             'threshold': threshold,
             'message': 'Dinh dang anh khong ho tro.'
         }
+
+    # --- MOI: Resize ve kich thuoc chuan de blur_score on dinh ---
+    # Anh to chup gan va anh nho chup xa se co score khac nhau neu khong normalize
+    h, w = img_array.shape[:2]
+    max_dim = 1024
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        img_array = cv2.resize(img_array, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # --- Buoc 1: Chuyen sang grayscale ---
     gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)

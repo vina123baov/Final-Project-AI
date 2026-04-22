@@ -20,7 +20,7 @@ if not exist .env (
 )
 
 :: Kiem tra model AI
-if exist models\document_classifier_v3.pth (
+if exist models\document_classifier_v4.pth (
     echo [OK] Model AI: da load
 ) else (
     echo [DEMO] Model AI: chua co file .pth - chay che do DEMO
