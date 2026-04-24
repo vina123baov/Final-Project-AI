@@ -127,3 +127,4 @@ LANGUAGE_CODE = 'vi'
 TIME_ZONE = 'Asia/Ho_Chi_Minh'
 USE_I18N = True
 USE_TZ = True
+SUPABASE_TIMEOUT = 5.0

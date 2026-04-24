@@ -23,10 +23,10 @@ export default function Page() {
             </div>
             
             <h1 className="text-5xl md:text-7xl font-black text-white mb-8 text-pretty leading-tight">
-              Hỗ Trợ Gia Đình<br/>Khó Khăn Thông Minh
+              AuraFamily
             </h1>
             <p className="text-xl text-white/85 mb-12 max-w-2xl mx-auto leading-relaxed font-light">
-              Nền tảng AI tích hợp thông tin gia đình để xác định và hỗ trợ hoàn cảnh khó khăn một cách nhanh chóng, chính xác và bảo mật.
+              Nền tảng tích hợp thông tin gia đình để xác định và hỗ trợ hoàn cảnh khó khăn một cách nhanh chóng, chính xác và bảo mật.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link

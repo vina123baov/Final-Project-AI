@@ -26,6 +26,7 @@ from .supabase_service import (
     create_audit_log,
     get_all_users,
     toggle_user_status,
+    get_supabase_client,
 )
 from ai_pipeline.pipeline import run_pipeline
 
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Rate Limiting (Section 2.1.2: gioi han 10 request/user/ngay)
+# Rate Limiting
 # ============================================================================
 
 class VerifyRateThrottle(UserRateThrottle):
@@ -107,7 +108,48 @@ def auth_me(request):
 
 
 # ============================================================================
-# POST /api/verify/ — UC03 (FULL FIX)
+# Helper: Upload ảnh lên Supabase Storage
+# Trả về storage_path (key trong bucket) hoặc None nếu thất bại
+# ============================================================================
+
+def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, content_type: str) -> str | None:
+    """
+    Upload file ảnh lên Supabase Storage bucket 'verification-images'.
+
+    Storage path (key trong bucket):
+        {user_id}/{filename}
+        Ví dụ: "2a23e411-1e53-4bbb-a11a-4d1dbaadd4bb/abc123.jpg"
+
+    Public URL để xem ảnh (sau khi bật public bucket):
+        https://pshspnvomfkxhrymetyf.supabase.co/storage/v1/object/public/verification-images/{user_id}/{filename}
+
+    Nếu không có user_id (anonymous):
+        anonymous/{filename}
+    """
+    try:
+        storage_key = f"{user_id}/{filename}" if user_id else f"anonymous/{filename}"
+
+        with open(temp_path, 'rb') as f:
+            get_supabase_client().storage.from_('verification-images').upload(
+                path=storage_key,
+                file=f,
+                file_options={
+                    "content-type": content_type or "image/jpeg",
+                    "cache-control": "3600",
+                }
+            )
+
+        logger.info(f"Image uploaded to Supabase Storage: verification-images/{storage_key}")
+        return storage_key
+
+    except Exception as e:
+        # Không crash pipeline nếu upload storage thất bại
+        logger.warning(f"Storage upload failed (non-critical): {e}")
+        return None
+
+
+# ============================================================================
+# POST /api/verify/ — UC03
 # ============================================================================
 
 @api_view(['POST'])
@@ -116,8 +158,16 @@ def auth_me(request):
 def verify_image(request):
     """
     POST /api/verify/
-    Nhan anh + vi tri + vat dung tiep te, chay AI Pipeline 7 buoc, luu tat ca vao Supabase.
-    Rate limit: 10 req/user/ngay (Section 2.1.2)
+    Nhận ảnh + vị trí + vật dụng tiếp tế, chạy AI Pipeline, lưu vào Supabase.
+
+    Flow:
+    1. Validate input
+    2. Lưu ảnh tạm vào /media/uploads/
+    3. Chạy AI Pipeline (blur → classify → confidence → forgery → stamp → OCR)
+    4. Upload ảnh lên Supabase Storage (để admin xem được)
+    5. Lưu kết quả vào bảng verification_requests
+    6. Xóa file tạm
+    7. Trả response
     """
     serializer = VerifyImageSerializer(data=request.data)
     if not serializer.is_valid():
@@ -133,7 +183,7 @@ def verify_image(request):
             'message': 'Vui long chon anh', 'data': {},
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Lay user_id
+    # Lấy user_id
     user_id = None
     if request.user and request.user.is_authenticated:
         user_id = str(request.user.id)
@@ -143,10 +193,10 @@ def verify_image(request):
     latitude = serializer.validated_data.get('latitude')
     longitude = serializer.validated_data.get('longitude')
     address = serializer.validated_data.get('address', '')
-    # MOI: lay support_categories tu request
+
+    # Lấy support_categories
     support_categories = request.data.getlist('support_categories', [])
     if not support_categories:
-        # Fallback: thu lay dang JSON string
         cats_str = request.data.get('support_categories', '')
         if cats_str:
             import json
@@ -155,10 +205,15 @@ def verify_image(request):
             except (json.JSONDecodeError, TypeError):
                 support_categories = [c.strip() for c in cats_str.split(',') if c.strip()]
 
+    temp_path = None
+
     try:
-        # Luu anh tam
+        # ----------------------------------------------------------------
+        # Bước 1: Lưu ảnh tạm
+        # ----------------------------------------------------------------
         upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads')
         os.makedirs(upload_dir, exist_ok=True)
+
         file_ext = image_file.name.split('.')[-1].lower()
         temp_filename = f"{uuid.uuid4().hex}.{file_ext}"
         temp_path = os.path.join(upload_dir, temp_filename)
@@ -167,46 +222,71 @@ def verify_image(request):
             for chunk in image_file.chunks():
                 f.write(chunk)
 
-        logger.info(f"Image saved: {temp_path} ({image_file.size} bytes)")
+        logger.info(f"Image saved temp: {temp_path} ({image_file.size} bytes)")
 
-        # Chay AI Pipeline 7 buoc
+        # ----------------------------------------------------------------
+        # Bước 2: Chạy AI Pipeline
+        # ----------------------------------------------------------------
         pipeline_result = run_pipeline(temp_path)
 
         logger.info(
-            f"Pipeline done: status={pipeline_result['status']}, "
+            f"Pipeline: status={pipeline_result['status']}, "
             f"class={pipeline_result.get('predicted_class')}, "
             f"conf={pipeline_result.get('confidence') or 0:.3f}, "
             f"time={pipeline_result.get('processing_time_ms', 0)}ms"
         )
 
-        # Luu vao Supabase
+        # ----------------------------------------------------------------
+        # Bước 3: Upload ảnh lên Supabase Storage
+        # image_path trong DB = storage key: "{user_id}/{temp_filename}"
+        # Public URL = https://pshspnvomfkxhrymetyf.supabase.co/storage/v1/object/public/verification-images/{image_path}
+        # ----------------------------------------------------------------
+        storage_path = _upload_image_to_storage(
+            temp_path=temp_path,
+            user_id=user_id or 'anonymous',
+            filename=temp_filename,
+            content_type=image_file.content_type or 'image/jpeg',
+        )
+
+        # ----------------------------------------------------------------
+        # Bước 4: Lưu vào Supabase DB
+        # ----------------------------------------------------------------
         request_id = None
         verification_code = None
 
         if user_id:
             verification_code = f"VF-{uuid.uuid4().hex[:8].upper()}"
 
-            # Day du cac cot theo ERD Bang 2.3
             db_data = {
                 'user_id': user_id,
-                'image_path': image_file.name,
+
+                # image_path = storage key trong bucket 'verification-images'
+                # Ví dụ: "2a23e411-1e53-4bbb-a11a-4d1dbaadd4bb/abc123def456.jpg"
+                # Dùng để build URL: SUPABASE_URL/storage/v1/object/public/verification-images/{image_path}
+                'image_path': storage_path or temp_filename,
+
                 'original_filename': image_file.name,
                 'status': pipeline_result['status'],
                 'result_type': pipeline_result.get('result_type'),
                 'verification_code': verification_code,
                 'expires_at': (datetime.utcnow() + timedelta(days=30)).isoformat(),
+
                 # Blur
                 'blur_score': pipeline_result.get('blur_score', 0),
                 'is_blurry': pipeline_result.get('is_blurry', False),
+
                 # Classification
                 'predicted_class': pipeline_result.get('predicted_class'),
                 'confidence': pipeline_result.get('confidence'),
                 'passed_confidence_check': pipeline_result.get('passed_confidence_check', False),
-                # Stamp detection
+
+                # Stamp
                 'stamp_detected': pipeline_result.get('stamp_detected', False),
                 'stamp_score': pipeline_result.get('stamp_score', 0.0),
-                # Forgery detection
+
+                # Forgery
                 'forgery_score': pipeline_result.get('forgery_score', 0.0),
+
                 # OCR
                 'extracted_text': pipeline_result.get('extracted_text'),
                 'ocr_confidence': pipeline_result.get('ocr_confidence'),
@@ -214,22 +294,24 @@ def verify_image(request):
                 'household_address': pipeline_result.get('household_address'),
                 'household_id_number': pipeline_result.get('household_id_number'),
                 'province': pipeline_result.get('province'),
-                # Thoi gian
+
+                # Thời gian
                 'processing_time_ms': pipeline_result.get('processing_time_ms', 0),
                 'message': pipeline_result.get('message', ''),
                 'need_retry': pipeline_result.get('need_retry', True),
-                # Vi tri
+
+                # Vị trí
                 'user_latitude': latitude,
                 'user_longitude': longitude,
                 'user_location_address': address,
-                # MOI: vat dung tiep te
+
+                # Vật dụng tiếp tế
                 'support_categories': support_categories if support_categories else None,
             }
 
             if pipeline_result['status'] == 'success':
                 db_data['verified_at'] = datetime.utcnow().isoformat()
 
-            # Thu insert day du, fallback neu thieu cot
             db_record = _safe_insert(db_data)
             request_id = db_record.get('id') if db_record else None
 
@@ -239,12 +321,19 @@ def verify_image(request):
                 'confidence': pipeline_result.get('confidence'),
                 'processing_time_ms': pipeline_result.get('processing_time_ms'),
                 'support_categories': support_categories,
+                'storage_path': storage_path,
             })
 
-        # Xoa file tam
-        if os.path.exists(temp_path):
+        # ----------------------------------------------------------------
+        # Bước 5: Xóa file tạm (ảnh đã upload Storage rồi)
+        # ----------------------------------------------------------------
+        if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+            logger.info(f"Temp file removed: {temp_path}")
 
+        # ----------------------------------------------------------------
+        # Bước 6: Trả response
+        # ----------------------------------------------------------------
         is_success = pipeline_result['status'] == 'success'
         return Response({
             'success': is_success,
@@ -276,8 +365,9 @@ def verify_image(request):
 
     except Exception as e:
         logger.exception(f"Verify error: {e}")
+        # Dọn file tạm nếu còn
         try:
-            if 'temp_path' in locals() and os.path.exists(temp_path):
+            if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
         except Exception:
             pass
@@ -289,12 +379,11 @@ def verify_image(request):
 
 
 def _safe_insert(db_data: dict) -> dict:
-    """Insert voi fallback — bo bot cot neu Supabase chua co."""
+    """Insert với fallback — bỏ bớt cột nếu Supabase báo lỗi cột chưa có."""
     try:
         return create_verification_request(db_data)
     except Exception as e1:
         logger.warning(f"Full insert failed: {e1}, trying without optional cols")
-        # Bo cac cot co the chua ton tai
         optional_cols = [
             'forgery_score', 'stamp_detected', 'stamp_score', 'is_blurry',
             'passed_confidence_check', 'ocr_confidence', 'province',
@@ -305,8 +394,7 @@ def _safe_insert(db_data: dict) -> dict:
         try:
             return create_verification_request(reduced)
         except Exception as e2:
-            logger.error(f"Reduced insert also failed: {e2}")
-            # Minimal insert
+            logger.error(f"Reduced insert failed: {e2}")
             minimal = {
                 'user_id': db_data.get('user_id'),
                 'image_path': db_data.get('image_path', ''),
@@ -323,7 +411,7 @@ def _safe_insert(db_data: dict) -> dict:
 
 
 # ============================================================================
-# GET /api/verified-locations/ — vi tri cac ho da xac minh (cho map)
+# GET /api/verified-locations/
 # ============================================================================
 
 @api_view(['GET'])
@@ -345,7 +433,6 @@ def get_verified_locations(request):
         return Response({'data': result.data or [], 'count': len(result.data or [])})
     except Exception as e:
         logger.error(f"get_verified_locations error: {e}")
-        # Fallback: try without support_categories column
         try:
             from .supabase_service import get_supabase_client
             supabase = get_supabase_client()
@@ -407,13 +494,15 @@ def admin_dashboard(request):
     errors = get_error_distribution()
     return Response({'dashboard': dashboard, 'error_distribution': errors})
 
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_requests(request):
     filter_status = request.query_params.get('status')
-    limit = int(request.query_params.get('limit', 100))
+    limit = int(request.query_params.get('limit', 50))
     requests_list = get_all_verification_requests(status=filter_status, limit=limit)
     return Response({'data': requests_list, 'count': len(requests_list)})
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -427,11 +516,13 @@ def admin_review(request):
     create_audit_log(admin_id, 'admin_review', 'verification_requests', request_id, {'notes': notes})
     return Response({'data': result})
 
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_users(request):
     users = get_all_users()
     return Response({'data': users, 'count': len(users)})
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])

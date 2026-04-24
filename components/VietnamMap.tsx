@@ -219,7 +219,7 @@ export default function VietnamMap({ height = 'h-96', showStats = true }: Vietna
           <div className="bg-card border border-border rounded-lg p-3 text-center flex items-center justify-center gap-2">
             <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
             <span className="text-sm text-foreground font-medium">
-              {isLiveData ? 'Dữ liệu thật' : 'Dữ liệu mẫu'}
+              {isLiveData ? 'Vị trí thực' : 'Dữ liệu mẫu'}
             </span>
           </div>
         </div>

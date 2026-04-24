@@ -66,7 +66,7 @@ export default function AdminDashboardPage() {
           <div className="mb-8 flex items-center justify-between">
             <div>
               <h1 className="text-4xl font-bold text-foreground mb-2">Dashboard Quản Trị</h1>
-              <p className="text-muted-foreground">Dữ liệu thực từ server — cập nhật realtime</p>
+              <p className="text-muted-foreground">Dữ liệu từ server - cập nhật realtime</p>
             </div>
             <button onClick={fetchData} className="p-2 hover:bg-secondary rounded-lg transition text-muted-foreground hover:text-foreground" title="Tải lại"><RefreshCw size={20} /></button>
           </div>
