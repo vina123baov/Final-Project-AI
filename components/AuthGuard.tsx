@@ -5,7 +5,6 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthContext'
 import { Loader } from 'lucide-react'
 
-// Cac trang KHONG can dang nhap
 const PUBLIC_PATHS = ['/login', '/register']
 
 interface AuthGuardProps {
@@ -13,25 +12,40 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ children }: AuthGuardProps) {
-  const { user, loading } = useAuth()  // ← dùng context, không gọi API
+  const { user, profile, loading, isAdmin } = useAuth()
   const pathname = usePathname()
   const router = useRouter()
 
+  const isAdminRoute = pathname.startsWith('/admin')
+
   useEffect(() => {
-    if (loading) return  // chờ auth load xong
+    if (loading) return
+
+    // Admin route: để AdminGuard xử lý
+    if (isAdminRoute) return
 
     if (user) {
-      // Đã login - nếu đang ở trang public thì chuyển về trang chủ
+      // Đã login + đang ở /login hoặc /register
       if (PUBLIC_PATHS.includes(pathname)) {
-        router.replace('/')
+        // Nếu là admin → vào /admin, nếu không → /
+        if (isAdmin) {
+          router.replace('/admin')
+        } else {
+          router.replace('/')
+        }
       }
     } else {
-      // Chưa login - nếu không phải trang public thì chuyển về login
+      // Chưa login + không phải public path → về /login
       if (!PUBLIC_PATHS.includes(pathname)) {
         router.replace('/login')
       }
     }
-  }, [user, loading, pathname, router])
+  }, [user, profile, loading, isAdmin, pathname, router, isAdminRoute])
+
+  // Trang admin: render thẳng, để AdminGuard handle
+  if (isAdminRoute) {
+    return <>{children}</>
+  }
 
   if (loading) {
     return (
@@ -44,14 +58,12 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     )
   }
 
-  // Trang public (login/register) luôn hiển thị
   if (PUBLIC_PATHS.includes(pathname)) {
     return <>{children}</>
   }
 
-  // Trang khác: chỉ hiển thị khi đã đăng nhập
   if (!user) {
-    return null  // đang redirect về /login
+    return null
   }
 
   return <>{children}</>

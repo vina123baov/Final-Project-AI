@@ -6,7 +6,7 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 let supabaseInstance: SupabaseClient | null = null
 
 export const createClient = (): SupabaseClient => {
-  // Server-side render (SSR) - mỗi request tạo client mới
+  // Server-side render
   if (typeof window === 'undefined') {
     return supabaseCreateClient(supabaseUrl, supabaseKey, {
       auth: {
@@ -17,7 +17,7 @@ export const createClient = (): SupabaseClient => {
     })
   }
 
-  // Client-side - dùng singleton
+  // Client-side singleton
   if (!supabaseInstance) {
     supabaseInstance = supabaseCreateClient(supabaseUrl, supabaseKey, {
       auth: {
@@ -25,6 +25,12 @@ export const createClient = (): SupabaseClient => {
         autoRefreshToken: true,
         detectSessionInUrl: true,
         storageKey: 'sb-pshspnvomfkxhrymetyf-auth-token',
+        storage: typeof window !== 'undefined' ? window.localStorage : undefined,
+        // FIX: Tắt NavigatorLockManager - nguyên nhân gây timeout 5s
+        // Lock này gây deadlock trong nhiều trường hợp (đa tab, refresh, Brave incognito)
+        lock: async (_name, _acquireTimeout, fn) => {
+          return await fn()
+        },
       },
     })
   }

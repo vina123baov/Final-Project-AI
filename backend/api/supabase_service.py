@@ -17,8 +17,8 @@ _service_client: Optional[Client] = None
 _anon_client: Optional[Client] = None
 
 # Timeout dài hơn cho mạng VN ↔ Supabase US
-SUPABASE_TIMEOUT = 15.0
-MAX_RETRIES = 2  # Retry tối đa 2 lần khi timeout
+SUPABASE_TIMEOUT = 30.0
+MAX_RETRIES = 3  # Retry tối đa 2 lần khi timeout
 
 
 def get_supabase_client() -> Client:
@@ -76,7 +76,7 @@ def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
             )
             _reset_clients()
             if attempt < retries:
-                time.sleep(0.5 * (attempt + 1))  # Backoff nhẹ
+                time.sleep(1.0 * (attempt + 1))  # Backoff nhẹ
                 continue
 
         except Exception as e:
@@ -89,7 +89,7 @@ def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
                 )
                 _reset_clients()
                 if attempt < retries:
-                    time.sleep(0.5 * (attempt + 1))
+                    time.sleep(1.0 * (attempt + 1))
                     continue
             else:
                 # Lỗi khác (vd: invalid SQL, permission) — không retry, log ra

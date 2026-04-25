@@ -1,8 +1,9 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
-import { useAdminAuth, AdminAuthProvider } from '@/components/AdminAuthContext'
+import { usePathname } from 'next/navigation'
+import { useState } from 'react'
+import { useAuth } from '@/components/AuthContext'
 import AdminGuard from '@/components/AdminGuard'
 import {
   LayoutDashboard,
@@ -14,19 +15,20 @@ import {
   ChevronRight,
 } from 'lucide-react'
 
-// ============================================================
-// Layout này chỉ áp dụng cho các trang trong /admin/*
-// HOÀN TOÀN tách biệt với layout của user thường
-// ============================================================
-
 function AdminSidebar() {
   const pathname = usePathname()
-  const router = useRouter()
-  const { admin, logout } = useAdminAuth()
+  const { profile, signOut } = useAuth()
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
 
   const handleLogout = async () => {
-    await logout()
-    router.replace('/admin/login')
+    if (isLoggingOut) return
+    setIsLoggingOut(true)
+    try {
+      await signOut()
+    } catch (err) {
+      console.error('Logout error:', err)
+    }
+    window.location.replace('/login')
   }
 
   const navItems = [
@@ -36,12 +38,10 @@ function AdminSidebar() {
     { href: '/admin/users', label: 'Người dùng', icon: Users },
   ]
 
-  if (!admin) return null
+  if (!profile) return null
 
   return (
     <aside className="w-64 bg-slate-900 text-white min-h-screen flex flex-col border-r border-slate-800">
-
-      {/* Logo */}
       <div className="p-6 border-b border-slate-800">
         <Link href="/admin" className="flex items-center gap-3 group">
           <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-500/30 group-hover:shadow-emerald-500/50 transition">
@@ -54,7 +54,6 @@ function AdminSidebar() {
         </Link>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 p-3 space-y-1">
         {navItems.map((item) => {
           const Icon = item.icon
@@ -80,27 +79,28 @@ function AdminSidebar() {
         })}
       </nav>
 
-      {/* User info + logout */}
       <div className="p-3 border-t border-slate-800">
         <div className="px-3 py-2.5 mb-2 rounded-lg bg-slate-800/50">
           <p className="text-xs text-slate-500 mb-0.5">Đang đăng nhập</p>
-          <p className="text-sm font-semibold text-white truncate">{admin.full_name}</p>
-          <p className="text-xs text-slate-400 truncate">{admin.email}</p>
+          <p className="text-sm font-semibold text-white truncate">{profile.full_name || 'Admin'}</p>
+          <p className="text-xs text-slate-400 truncate">{profile.email}</p>
           <span className={`inline-block mt-1.5 px-2 py-0.5 rounded text-xs font-medium ${
-            admin.role === 'super_admin'
+            profile.role === 'super_admin'
               ? 'bg-amber-500/20 text-amber-300'
               : 'bg-emerald-500/20 text-emerald-300'
           }`}>
-            {admin.role === 'super_admin' ? '⭐ Super Admin' : '🛡️ Admin'}
+            {profile.role === 'super_admin' ? '⭐ Super Admin' : '🛡️ Admin'}
           </span>
         </div>
 
         <button
+          type="button"
           onClick={handleLogout}
-          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition text-sm font-medium"
+          disabled={isLoggingOut}
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-slate-400 hover:bg-red-500/10 hover:text-red-400 transition text-sm font-medium disabled:opacity-50"
         >
           <LogOut size={18} />
-          Đăng xuất
+          {isLoggingOut ? 'Đang đăng xuất...' : 'Đăng xuất'}
         </button>
       </div>
     </aside>
@@ -108,14 +108,6 @@ function AdminSidebar() {
 }
 
 function AdminLayoutInner({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname()
-  const isLoginPage = pathname === '/admin/login'
-
-  // Trang login KHÔNG hiển thị sidebar
-  if (isLoginPage) {
-    return <>{children}</>
-  }
-
   return (
     <div className="flex min-h-screen bg-background">
       <AdminSidebar />
@@ -128,12 +120,10 @@ function AdminLayoutInner({ children }: { children: React.ReactNode }) {
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
-    <AdminAuthProvider>
-      <AdminGuard>
-        <AdminLayoutInner>
-          {children}
-        </AdminLayoutInner>
-      </AdminGuard>
-    </AdminAuthProvider>
+    <AdminGuard>
+      <AdminLayoutInner>
+        {children}
+      </AdminLayoutInner>
+    </AdminGuard>
   )
 }
