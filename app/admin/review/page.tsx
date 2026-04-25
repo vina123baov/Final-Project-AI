@@ -439,47 +439,30 @@ export default function AdminReviewPage() {
                         <RequestImage req={req} />
                       </div>
 
+                      {/* ===================================================== */}
+                      {/* Kết Quả — chỉ giữ Phân loại và File theo yêu cầu */}
+                      {/* Đã bỏ: Blur Score, Con dấu, Forgery Score, Xử lý     */}
+                      {/* ===================================================== */}
                       <div>
                         <h4 className="font-semibold text-foreground mb-4">Kết Quả</h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="bg-background rounded-lg p-4">
                             <p className="text-xs text-muted-foreground mb-1">Phân loại</p>
-                            <p className="font-semibold">{req.predicted_class === 'so_ho_ngheo' ? 'Sổ hộ nghèo' : req.predicted_class === 'giay_to_khac' ? 'Giấy tờ khác' : req.predicted_class || '—'}</p>
-                          </div>
-                          <div className="bg-background rounded-lg p-4">
-                            <p className="text-xs text-muted-foreground mb-1">Blur Score</p>
-                            <p className="font-semibold">{req.blur_score?.toFixed(1) ?? '—'}
-                              {req.blur_score !== null && req.blur_score !== undefined && (
-                                <span className={`ml-2 text-xs ${req.blur_score < 50 ? 'text-destructive' : req.blur_score < 100 ? 'text-warning' : 'text-success'}`}>
-                                  {req.blur_score < 50 ? '(quá mờ)' : req.blur_score < 100 ? '(mờ nhẹ)' : '(rõ)'}
-                                </span>
-                              )}
+                            <p className="font-semibold">
+                              {req.predicted_class === 'so_ho_ngheo' ? 'Sổ hộ nghèo'
+                                : req.predicted_class === 'giay_to_khac' ? 'Giấy tờ khác'
+                                : req.predicted_class === 'anh_khong_lien_quan' ? 'Ảnh không liên quan'
+                                : req.predicted_class || '—'}
                             </p>
-                          </div>
-                          <div className="bg-background rounded-lg p-4">
-                            <p className="text-xs text-muted-foreground mb-1">Con dấu</p>
-                            <p className="font-semibold">{req.stamp_detected ? `✅ Có (${(req.stamp_score * 100).toFixed(0)}%)` : `❌ Không (${(req.stamp_score * 100).toFixed(0)}%)`}</p>
-                          </div>
-                          <div className="bg-background rounded-lg p-4">
-                            <p className="text-xs text-muted-foreground mb-1">Forgery Score</p>
-                            <p className="font-semibold">{(req.forgery_score * 100).toFixed(1)}%
-                              <span className={`ml-2 text-xs ${req.forgery_score >= 0.7 ? 'text-destructive' : req.forgery_score >= 0.4 ? 'text-warning' : req.forgery_score >= 0.25 ? 'text-blue-500' : 'text-success'}`}>
-                                {req.forgery_score >= 0.7 ? '(nguy hiểm)' : req.forgery_score >= 0.4 ? '(nghi ngờ)' : req.forgery_score >= 0.25 ? '(nhẹ)' : '(bình thường)'}
-                              </span>
-                            </p>
-                          </div>
-                          <div className="bg-background rounded-lg p-4">
-                            <p className="text-xs text-muted-foreground mb-1">Xử lý</p>
-                            <p className="font-semibold">{req.processing_time_ms ? `${req.processing_time_ms}ms` : '—'}</p>
                           </div>
                           <div className="bg-background rounded-lg p-4">
                             <p className="text-xs text-muted-foreground mb-1">File</p>
-                            <p className="font-semibold text-sm truncate">{req.original_filename || '—'}</p>
+                            <p className="font-semibold text-sm truncate" title={req.original_filename || ''}>
+                              {req.original_filename || '—'}
+                            </p>
                           </div>
                         </div>
                       </div>
-
-                      {/* Đã bỏ phần OCR — vì đang ở DEMO mode trả text giả không có giá trị */}
 
                       {req.admin_notes && (
                         <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
@@ -491,12 +474,7 @@ export default function AdminReviewPage() {
                         <div>
                           <p className="text-sm font-semibold text-foreground mb-3">Quyết định xét duyệt:</p>
                           <div className="flex gap-4">
-                            {/*
-                              Đồng Ý — dùng inline style + bg-green-600 hardcoded
-                              để đảm bảo hiển thị bất kể CSS variables có lỗi hay không.
-                              Các class Tailwind chuẩn (green-600, green-700) chắc chắn có
-                              giá trị màu cố định và không phụ thuộc theme/CSS vars.
-                            */}
+                            {/* Đồng Ý — green-600 hardcoded */}
                             <button
                               type="button"
                               onClick={() => handleApprove(req.id)}
@@ -515,9 +493,7 @@ export default function AdminReviewPage() {
                               <span style={{ color: '#ffffff' }}>Đồng Ý</span>
                             </button>
 
-                            {/*
-                              Từ chối — dùng inline style + red-600 hardcoded cho nhất quán
-                            */}
+                            {/* Từ Chối — red-600 hardcoded */}
                             <button
                               type="button"
                               onClick={() => handleReject(req.id)}

@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/app/utils/supabase/client'
+import { useAuth } from '@/components/AuthContext'
 import { Loader } from 'lucide-react'
 
 // Cac trang KHONG can dang nhap
@@ -13,48 +13,25 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ children }: AuthGuardProps) {
-  const [loading, setLoading] = useState(true)
-  const [authenticated, setAuthenticated] = useState(false)
+  const { user, loading } = useAuth()  // ← dùng context, không gọi API
   const pathname = usePathname()
   const router = useRouter()
-  const supabase = createClient()
 
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
+    if (loading) return  // chờ auth load xong
 
-      if (session) {
-        setAuthenticated(true)
-        // Neu dang o trang login/register ma da dang nhap -> chuyen ve trang chu
-        if (PUBLIC_PATHS.includes(pathname)) {
-          router.replace('/')
-        }
-      } else {
-        setAuthenticated(false)
-        // Neu chua dang nhap va khong phai trang public -> chuyen ve login
-        if (!PUBLIC_PATHS.includes(pathname)) {
-          router.replace('/login')
-        }
+    if (user) {
+      // Đã login - nếu đang ở trang public thì chuyển về trang chủ
+      if (PUBLIC_PATHS.includes(pathname)) {
+        router.replace('/')
       }
-      setLoading(false)
+    } else {
+      // Chưa login - nếu không phải trang public thì chuyển về login
+      if (!PUBLIC_PATHS.includes(pathname)) {
+        router.replace('/login')
+      }
     }
-
-    checkAuth()
-
-    // Lang nghe thay doi auth state
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        setAuthenticated(true)
-      } else {
-        setAuthenticated(false)
-        if (!PUBLIC_PATHS.includes(pathname)) {
-          router.replace('/login')
-        }
-      }
-    })
-
-    return () => { subscription.unsubscribe() }
-  }, [pathname, router, supabase])
+  }, [user, loading, pathname, router])
 
   if (loading) {
     return (
@@ -67,14 +44,14 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     )
   }
 
-  // Trang public (login/register) luon hien
+  // Trang public (login/register) luôn hiển thị
   if (PUBLIC_PATHS.includes(pathname)) {
     return <>{children}</>
   }
 
-  // Trang khac: chi hien khi da dang nhap
-  if (!authenticated) {
-    return null // Dang redirect ve /login
+  // Trang khác: chỉ hiển thị khi đã đăng nhập
+  if (!user) {
+    return null  // đang redirect về /login
   }
 
   return <>{children}</>

@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
+from . import admin_views
 
 urlpatterns = [
     path('auth/login/', views.auth_login, name='auth-login'),
@@ -20,7 +21,11 @@ urlpatterns = [
     path('admin/review/', views.admin_review, name='admin-review'),
     path('admin/users/', views.admin_users, name='admin-users'),
     path('admin/users/toggle/', views.admin_toggle_user, name='admin-toggle-user'),
-
+    
+    # Admin auth  ←←← SỬA Ở ĐÂY
+    path('admin/login/', admin_views.admin_login, name='admin-login'),
+    path('admin/logout/', admin_views.admin_logout, name='admin-logout'),
+    path('admin/verify/', admin_views.admin_verify_token, name='admin-verify'),      
     # System
     path('health/', views.health_check, name='health-check'),
 ]

@@ -2,6 +2,7 @@ import React from "react"
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import AuthGuard from '@/components/AuthGuard'
+import { AuthProvider } from '@/components/AuthContext'
 
 import './globals.css'
 
@@ -21,9 +22,12 @@ export default function RootLayout({
   return (
     <html lang="vi">
       <body className="font-sans antialiased">
-        <AuthGuard>
-          {children}
-        </AuthGuard>
+        {/* AuthProvider phải ở ngoài cùng để mọi component dùng được useAuth() */}
+        <AuthProvider>
+          <AuthGuard>
+            {children}
+          </AuthGuard>
+        </AuthProvider>
       </body>
     </html>
   )
