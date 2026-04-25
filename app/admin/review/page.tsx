@@ -6,32 +6,37 @@ import Header from '@/components/Header'
 import Footer from '@/components/Footer'
 import Toast, { ToastType } from '@/components/Toast'
 import { CheckCircle, XCircle, ChevronDown, Loader, RefreshCw, AlertCircle, Clock, Eye, Shield, Search, ZoomIn, X, ImageOff } from 'lucide-react'
-import { getAdminRequests, adminReview, type AdminRequest } from '@/lib/api'
+import { getAdminRequests, type AdminRequest } from '@/lib/api'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://pshspnvomfkxhrymetyf.supabase.co'
 
 // ============================================================
-// Component xem ảnh — thumbnail + lightbox zoom
+// Component xem ảnh
 // ============================================================
 function RequestImage({ req }: { req: AdminRequest }) {
   const [zoomed, setZoomed] = useState(false)
-  const [useFallback, setUseFallback] = useState(false)
   const [imgError, setImgError] = useState(false)
+  const [currentSrcIndex, setCurrentSrcIndex] = useState(0)
 
   const imagePath = (req as any).image_path || (req as any).image_storage_path
   const originalFilename = req.original_filename
 
-  // Thử Supabase Storage trước
-  const storageUrl = imagePath
-    ? `${SUPABASE_URL}/storage/v1/object/public/verification-images/${imagePath}`
-    : null
-  // Fallback: media local (backend Django)
-  const localUrl = originalFilename
-    ? `${API_BASE}/media/uploads/${originalFilename}`
-    : null
+  const candidateUrls: string[] = []
 
-  const imgSrc = useFallback ? localUrl : (storageUrl || localUrl)
+  if (originalFilename) {
+    candidateUrls.push(`${API_BASE}/media/uploads/${originalFilename}`)
+  }
+
+  if (imagePath && imagePath.includes('/')) {
+    candidateUrls.push(`${SUPABASE_URL}/storage/v1/object/public/verification-images/${imagePath}`)
+  }
+
+  if (imagePath && !imagePath.includes('/') && imagePath !== originalFilename) {
+    candidateUrls.push(`${API_BASE}/media/uploads/${imagePath}`)
+  }
+
+  const imgSrc = candidateUrls[currentSrcIndex]
 
   if (!imgSrc || imgError) {
     return (
@@ -47,7 +52,6 @@ function RequestImage({ req }: { req: AdminRequest }) {
 
   return (
     <>
-      {/* Thumbnail */}
       <div
         className="relative group rounded-xl overflow-hidden border border-border cursor-zoom-in bg-black/5"
         onClick={() => setZoomed(true)}
@@ -57,14 +61,13 @@ function RequestImage({ req }: { req: AdminRequest }) {
           alt={`Ảnh xác minh #${req.id}`}
           className="w-full h-64 object-contain bg-secondary/20"
           onError={() => {
-            if (!useFallback && localUrl) {
-              setUseFallback(true) // thử fallback URL
+            if (currentSrcIndex < candidateUrls.length - 1) {
+              setCurrentSrcIndex(currentSrcIndex + 1)
             } else {
               setImgError(true)
             }
           }}
         />
-        {/* Hover overlay */}
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-all flex items-center justify-center">
           <div className="opacity-0 group-hover:opacity-100 transition bg-black/70 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold">
             <ZoomIn size={18} /> Phóng to xem
@@ -72,7 +75,6 @@ function RequestImage({ req }: { req: AdminRequest }) {
         </div>
       </div>
 
-      {/* Lightbox */}
       {zoomed && (
         <div
           className="fixed inset-0 z-[9999] bg-black/95 flex items-center justify-center p-6"
@@ -99,7 +101,34 @@ function RequestImage({ req }: { req: AdminRequest }) {
   )
 }
 
-// Nhãn tiếng Việt đầy đủ cho result_type
+// ============================================================
+// Helper: gọi admin review API
+// ============================================================
+async function callAdminReview(
+  requestId: number,
+  action: 'approve' | 'reject',
+  notes: string,
+  adminId?: string,
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/api/admin/review/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      request_id: requestId,
+      admin_id: adminId || null,
+      notes,
+      action,
+    }),
+  })
+
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`API ${res.status}: ${errText}`)
+  }
+
+  return res.json()
+}
+
 const RESULT_TYPE_LABELS: Record<string, { label: string; color: string; bg: string }> = {
   success: { label: 'Thành công', color: 'text-success', bg: 'bg-success/10' },
   blur: { label: 'Ảnh mờ', color: 'text-destructive', bg: 'bg-destructive/10' },
@@ -115,7 +144,6 @@ const RESULT_TYPE_LABELS: Record<string, { label: string; color: string; bg: str
   review: { label: 'Cần xem xét', color: 'text-blue-600', bg: 'bg-blue-500/10' },
 }
 
-// Hướng dẫn xét duyệt cho từng loại pending/review
 const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: string }> = {
   review_blur: {
     title: '📷 Ảnh mờ vùng con dấu/chữ ký',
@@ -125,7 +153,7 @@ const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: st
       'Số sổ hộ nghèo có rõ không',
       'Thông tin tên, địa chỉ có khớp không',
     ],
-    tip: 'Nếu đọc được đủ thông tin cơ bản → Phê duyệt. Nếu con dấu hoàn toàn không rõ → Từ chối và yêu cầu chụp lại.',
+    tip: 'Nếu đọc được đủ thông tin cơ bản → Đồng ý. Nếu con dấu hoàn toàn không rõ → Từ chối và yêu cầu chụp lại.',
   },
   review_forgery: {
     title: '🛡️ Nghi ngờ tính xác thực (nhẹ)',
@@ -135,7 +163,7 @@ const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: st
       'Xem metadata ảnh (thường do chất lượng scan)',
       'Kiểm tra viền và góc của tài liệu',
     ],
-    tip: 'Thường là do scan/chụp lại từ bản photocopy hoặc chất lượng camera thấp. Nếu nội dung hợp lệ → Phê duyệt.',
+    tip: 'Thường là do scan/chụp lại từ bản photocopy hoặc chất lượng camera thấp. Nếu nội dung hợp lệ → Đồng ý.',
   },
   pending_forgery: {
     title: '⚠️ Nghi ngờ chỉnh sửa (vừa)',
@@ -155,7 +183,7 @@ const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: st
       'Kiểm tra xem ảnh có bị cắt mất góc không',
       'Xác nhận đây có phải sổ hộ nghèo thực không',
     ],
-    tip: 'Nếu tìm thấy con dấu khi nhìn kỹ → Phê duyệt. Nếu không có con dấu nào → Từ chối.',
+    tip: 'Nếu tìm thấy con dấu khi nhìn kỹ → Đồng ý. Nếu không có con dấu nào → Từ chối.',
   },
   pending_low_confidence: {
     title: '📊 Độ nhận diện biên giới',
@@ -165,13 +193,13 @@ const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: st
       'So sánh với mẫu sổ hộ nghèo chuẩn',
       'Kiểm tra thông tin trích xuất có đúng không',
     ],
-    tip: 'AI không chắc chắn. Dùng mắt người để xác nhận loại tài liệu. Nếu đúng là sổ hộ nghèo → Phê duyệt.',
+    tip: 'AI không chắc chắn. Dùng mắt người để xác nhận loại tài liệu. Nếu đúng là sổ hộ nghèo → Đồng ý.',
   },
 }
 
 type TabType = 'all' | 'pending' | 'review' | 'success' | 'failed'
 
-const TAB_CONFIG: Record<TabType, { label: string; icon: React.FC<any>; color: string; filterStatus?: string; filterResultTypes?: string[] }> = {
+const TAB_CONFIG: Record<TabType, { label: string; icon: React.FC<any>; color: string; filterStatus?: string }> = {
   all: { label: 'Tất cả', icon: Search, color: 'text-foreground' },
   pending: { label: 'Chờ duyệt', icon: Clock, color: 'text-warning', filterStatus: 'pending' },
   review: { label: 'Cần xem xét', icon: Eye, color: 'text-blue-500', filterStatus: 'review' },
@@ -186,50 +214,61 @@ export default function AdminReviewPage() {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null)
   const [reviewingId, setReviewingId] = useState<number | null>(null)
+  const [reviewingAction, setReviewingAction] = useState<'approve' | 'reject' | null>(null)
   const [activeTab, setActiveTab] = useState<TabType>('pending')
 
   const fetchRequests = async () => {
     setLoading(true); setError(null)
     try {
-      // Lấy tất cả, lọc ở client để có tab counts
       const data = await getAdminRequests(undefined, 50)
       setRequests(data.data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể kết nối server')
     } finally {
-      setLoading(false) }
+      setLoading(false)
+    }
   }
 
   useEffect(() => { fetchRequests() }, [])
 
   const handleApprove = async (id: number) => {
     setReviewingId(id)
+    setReviewingAction('approve')
     try {
-      await adminReview(id, 'admin-user', 'Đã phê duyệt sau xem xét thủ công')
-      setToast({ message: `#${id} đã phê duyệt`, type: 'success' })
-      setExpandedId(null); fetchRequests()
-    } catch { setToast({ message: 'Lỗi khi phê duyệt', type: 'error' }) }
-    finally { setReviewingId(null) }
+      await callAdminReview(id, 'approve', 'Đã đồng ý sau xem xét thủ công')
+      setToast({ message: `#${id} đã được phê duyệt`, type: 'success' })
+      setExpandedId(null)
+      fetchRequests()
+    } catch (err) {
+      setToast({ message: 'Lỗi khi phê duyệt: ' + (err instanceof Error ? err.message : ''), type: 'error' })
+    } finally {
+      setReviewingId(null)
+      setReviewingAction(null)
+    }
   }
 
   const handleReject = async (id: number) => {
     setReviewingId(id)
+    setReviewingAction('reject')
     try {
-      await adminReview(id, 'admin-user', 'Đã từ chối sau xem xét thủ công')
+      await callAdminReview(id, 'reject', 'Đã từ chối sau xem xét thủ công')
       setToast({ message: `#${id} đã từ chối`, type: 'warning' })
-      setExpandedId(null); fetchRequests()
-    } catch { setToast({ message: 'Lỗi khi từ chối', type: 'error' }) }
-    finally { setReviewingId(null) }
+      setExpandedId(null)
+      fetchRequests()
+    } catch (err) {
+      setToast({ message: 'Lỗi khi từ chối: ' + (err instanceof Error ? err.message : ''), type: 'error' })
+    } finally {
+      setReviewingId(null)
+      setReviewingAction(null)
+    }
   }
 
-  // Lọc theo tab
   const filteredRequests = requests.filter(r => {
     const cfg = TAB_CONFIG[activeTab]
     if (!cfg.filterStatus) return true
     return r.status === cfg.filterStatus
   })
 
-  // Đếm cho tab badges
   const counts = {
     all: requests.length,
     pending: requests.filter(r => r.status === 'pending').length,
@@ -281,7 +320,6 @@ export default function AdminReviewPage() {
             </div>
           </div>
 
-          {/* Banner cần duyệt */}
           {needsActionCount > 0 && (
             <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 mb-6 flex items-center gap-3">
               <Clock size={20} className="text-warning flex-shrink-0" />
@@ -294,7 +332,6 @@ export default function AdminReviewPage() {
             </div>
           )}
 
-          {/* Tabs */}
           <div className="bg-card border border-border rounded-lg p-1 mb-6 flex gap-1 overflow-x-auto">
             {(Object.entries(TAB_CONFIG) as [TabType, typeof TAB_CONFIG[TabType]][]).map(([key, cfg]) => {
               const Icon = cfg.icon
@@ -326,12 +363,12 @@ export default function AdminReviewPage() {
             })}
           </div>
 
-          {/* Request list */}
           <div className="space-y-4">
             {filteredRequests.map((req) => {
               const rtInfo = req.result_type ? RESULT_TYPE_LABELS[req.result_type] : null
               const guidance = req.result_type ? REVIEW_GUIDANCE[req.result_type] : null
               const needsAction = req.status === 'pending' || req.status === 'review'
+              const isThisRowReviewing = reviewingId === req.id
 
               return (
                 <div key={req.id} className={`bg-card border rounded-lg overflow-hidden transition ${needsAction ? 'border-warning/40 shadow-sm' : 'border-border'}`}>
@@ -342,7 +379,6 @@ export default function AdminReviewPage() {
                     <div className="flex-1 text-left">
                       <div className="flex items-center gap-3 mb-2 flex-wrap">
                         <h3 className="font-semibold text-foreground">#{req.id} — {req.verification_code || 'N/A'}</h3>
-                        {/* Status badge */}
                         <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
                           req.status === 'success' ? 'bg-success/10 text-success' :
                           req.status === 'pending' ? 'bg-warning/15 text-warning' :
@@ -353,7 +389,6 @@ export default function AdminReviewPage() {
                            req.status === 'pending' ? '⏳ Chờ duyệt' :
                            req.status === 'review' ? '🔍 Cần xem xét' : '✗ Thất bại'}
                         </span>
-                        {/* Result type tag */}
                         {rtInfo && (
                           <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${rtInfo.bg} ${rtInfo.color}`}>
                             {rtInfo.label}
@@ -375,7 +410,6 @@ export default function AdminReviewPage() {
                   {expandedId === req.id && (
                     <div className="border-t border-border p-6 space-y-6 bg-secondary/10">
 
-                      {/* Hướng dẫn xét duyệt cho pending/review */}
                       {needsAction && guidance && (
                         <div className="bg-warning/5 border border-warning/30 rounded-xl p-5">
                           <h4 className="font-bold text-foreground mb-3 flex items-center gap-2">
@@ -397,7 +431,6 @@ export default function AdminReviewPage() {
                         </div>
                       )}
 
-                      {/* ẢNH ĐÃ UPLOAD */}
                       <div>
                         <h4 className="font-semibold text-foreground mb-3 flex items-center gap-2">
                           <Eye size={16} className="text-primary" />
@@ -406,9 +439,8 @@ export default function AdminReviewPage() {
                         <RequestImage req={req} />
                       </div>
 
-                      {/* AI Pipeline details */}
                       <div>
-                        <h4 className="font-semibold text-foreground mb-4">Kết Quả AI Pipeline</h4>
+                        <h4 className="font-semibold text-foreground mb-4">Kết Quả</h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="bg-background rounded-lg p-4">
                             <p className="text-xs text-muted-foreground mb-1">Phân loại</p>
@@ -441,24 +473,13 @@ export default function AdminReviewPage() {
                             <p className="font-semibold">{req.processing_time_ms ? `${req.processing_time_ms}ms` : '—'}</p>
                           </div>
                           <div className="bg-background rounded-lg p-4">
-                            <p className="text-xs text-muted-foreground mb-1">File gốc</p>
+                            <p className="text-xs text-muted-foreground mb-1">File</p>
                             <p className="font-semibold text-sm truncate">{req.original_filename || '—'}</p>
                           </div>
                         </div>
                       </div>
 
-                      {/* OCR */}
-                      {req.extracted_text && (
-                        <div>
-                          <h4 className="font-semibold text-foreground mb-4">Thông Tin OCR</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {req.household_name && <div className="bg-background rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Tên chủ hộ</p><p className="font-semibold">{req.household_name}</p></div>}
-                            {req.household_address && <div className="bg-background rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Địa chỉ</p><p className="font-semibold">{req.household_address}</p></div>}
-                            {req.household_id_number && <div className="bg-background rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Mã hộ</p><p className="font-semibold">{req.household_id_number}</p></div>}
-                          </div>
-                          <div className="mt-4 bg-background rounded-lg p-4"><p className="text-xs text-muted-foreground mb-1">Raw text</p><p className="text-sm whitespace-pre-wrap">{req.extracted_text}</p></div>
-                        </div>
-                      )}
+                      {/* Đã bỏ phần OCR — vì đang ở DEMO mode trả text giả không có giá trị */}
 
                       {req.admin_notes && (
                         <div className="bg-primary/5 border border-primary/20 rounded-lg p-4">
@@ -466,26 +487,53 @@ export default function AdminReviewPage() {
                         </div>
                       )}
 
-                      {/* Action buttons — chỉ hiện cho pending và review */}
                       {needsAction && (
                         <div>
                           <p className="text-sm font-semibold text-foreground mb-3">Quyết định xét duyệt:</p>
                           <div className="flex gap-4">
+                            {/*
+                              Đồng Ý — dùng inline style + bg-green-600 hardcoded
+                              để đảm bảo hiển thị bất kể CSS variables có lỗi hay không.
+                              Các class Tailwind chuẩn (green-600, green-700) chắc chắn có
+                              giá trị màu cố định và không phụ thuộc theme/CSS vars.
+                            */}
                             <button
+                              type="button"
                               onClick={() => handleApprove(req.id)}
-                              disabled={reviewingId === req.id}
-                              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-success text-white font-bold rounded-lg hover:opacity-90 disabled:opacity-50 transition"
+                              disabled={isThisRowReviewing}
+                              style={{
+                                backgroundColor: isThisRowReviewing ? '#16a34a99' : '#16a34a',
+                                color: '#ffffff',
+                              }}
+                              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 font-bold rounded-lg hover:brightness-110 disabled:cursor-not-allowed transition shadow-md"
                             >
-                              {reviewingId === req.id ? <Loader size={18} className="animate-spin" /> : <CheckCircle size={20} />}
-                              Phê Duyệt
+                              {isThisRowReviewing && reviewingAction === 'approve' ? (
+                                <Loader size={18} className="animate-spin" style={{ color: '#ffffff' }} />
+                              ) : (
+                                <CheckCircle size={20} style={{ color: '#ffffff' }} strokeWidth={2.5} />
+                              )}
+                              <span style={{ color: '#ffffff' }}>Đồng Ý</span>
                             </button>
+
+                            {/*
+                              Từ chối — dùng inline style + red-600 hardcoded cho nhất quán
+                            */}
                             <button
+                              type="button"
                               onClick={() => handleReject(req.id)}
-                              disabled={reviewingId === req.id}
-                              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-destructive text-white font-bold rounded-lg hover:opacity-90 disabled:opacity-50 transition"
+                              disabled={isThisRowReviewing}
+                              style={{
+                                backgroundColor: isThisRowReviewing ? '#dc262699' : '#dc2626',
+                                color: '#ffffff',
+                              }}
+                              className="flex-1 flex items-center justify-center gap-2 px-6 py-3 font-bold rounded-lg hover:brightness-110 disabled:cursor-not-allowed transition shadow-md"
                             >
-                              {reviewingId === req.id ? <Loader size={18} className="animate-spin" /> : <XCircle size={20} />}
-                              Từ Chối
+                              {isThisRowReviewing && reviewingAction === 'reject' ? (
+                                <Loader size={18} className="animate-spin" style={{ color: '#ffffff' }} />
+                              ) : (
+                                <XCircle size={20} style={{ color: '#ffffff' }} strokeWidth={2.5} />
+                              )}
+                              <span style={{ color: '#ffffff' }}>Từ Chối</span>
                             </button>
                           </div>
                         </div>

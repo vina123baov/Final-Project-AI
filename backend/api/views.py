@@ -1,6 +1,7 @@
 import os
 import uuid
 import logging
+import re
 from datetime import datetime, timedelta
 
 from django.conf import settings
@@ -31,6 +32,19 @@ from .supabase_service import (
 from ai_pipeline.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
+
+# Regex validate UUID
+UUID_PATTERN = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
+
+
+def _is_valid_uuid(value: str) -> bool:
+    """Kiểm tra string có phải UUID hợp lệ không"""
+    if not value:
+        return False
+    return bool(UUID_PATTERN.match(str(value)))
 
 
 # ============================================================================
@@ -109,22 +123,12 @@ def auth_me(request):
 
 # ============================================================================
 # Helper: Upload ảnh lên Supabase Storage
-# Trả về storage_path (key trong bucket) hoặc None nếu thất bại
 # ============================================================================
 
 def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, content_type: str) -> str | None:
     """
     Upload file ảnh lên Supabase Storage bucket 'verification-images'.
-
-    Storage path (key trong bucket):
-        {user_id}/{filename}
-        Ví dụ: "2a23e411-1e53-4bbb-a11a-4d1dbaadd4bb/abc123.jpg"
-
-    Public URL để xem ảnh (sau khi bật public bucket):
-        https://pshspnvomfkxhrymetyf.supabase.co/storage/v1/object/public/verification-images/{user_id}/{filename}
-
-    Nếu không có user_id (anonymous):
-        anonymous/{filename}
+    Trả về storage_key hoặc None nếu fail.
     """
     try:
         storage_key = f"{user_id}/{filename}" if user_id else f"anonymous/{filename}"
@@ -143,7 +147,6 @@ def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, conten
         return storage_key
 
     except Exception as e:
-        # Không crash pipeline nếu upload storage thất bại
         logger.warning(f"Storage upload failed (non-critical): {e}")
         return None
 
@@ -158,16 +161,9 @@ def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, conten
 def verify_image(request):
     """
     POST /api/verify/
-    Nhận ảnh + vị trí + vật dụng tiếp tế, chạy AI Pipeline, lưu vào Supabase.
-
-    Flow:
-    1. Validate input
-    2. Lưu ảnh tạm vào /media/uploads/
-    3. Chạy AI Pipeline (blur → classify → confidence → forgery → stamp → OCR)
-    4. Upload ảnh lên Supabase Storage (để admin xem được)
-    5. Lưu kết quả vào bảng verification_requests
-    6. Xóa file tạm
-    7. Trả response
+    
+    QUAN TRỌNG: Sau khi upload xong, file local trong /media/uploads/ ĐƯỢC GIỮ LẠI
+    để frontend có thể hiển thị ảnh khi Supabase Storage upload bị fail (StreamReset).
     """
     serializer = VerifyImageSerializer(data=request.data)
     if not serializer.is_valid():
@@ -209,7 +205,8 @@ def verify_image(request):
 
     try:
         # ----------------------------------------------------------------
-        # Bước 1: Lưu ảnh tạm
+        # Bước 1: Lưu ảnh vào /media/uploads/
+        # File này sẽ được GIỮ LẠI làm backup nếu Storage upload fail.
         # ----------------------------------------------------------------
         upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads')
         os.makedirs(upload_dir, exist_ok=True)
@@ -222,7 +219,7 @@ def verify_image(request):
             for chunk in image_file.chunks():
                 f.write(chunk)
 
-        logger.info(f"Image saved temp: {temp_path} ({image_file.size} bytes)")
+        logger.info(f"Image saved locally: {temp_path} ({image_file.size} bytes)")
 
         # ----------------------------------------------------------------
         # Bước 2: Chạy AI Pipeline
@@ -237,9 +234,7 @@ def verify_image(request):
         )
 
         # ----------------------------------------------------------------
-        # Bước 3: Upload ảnh lên Supabase Storage
-        # image_path trong DB = storage key: "{user_id}/{temp_filename}"
-        # Public URL = https://pshspnvomfkxhrymetyf.supabase.co/storage/v1/object/public/verification-images/{image_path}
+        # Bước 3: Upload lên Supabase Storage (best-effort)
         # ----------------------------------------------------------------
         storage_path = _upload_image_to_storage(
             temp_path=temp_path,
@@ -249,45 +244,39 @@ def verify_image(request):
         )
 
         # ----------------------------------------------------------------
-        # Bước 4: Lưu vào Supabase DB
+        # Bước 4: Lưu vào DB
+        # image_path = storage_key NẾU upload thành công
+        # image_path = filename gốc (chỉ tên file) → frontend dùng /media/uploads/{filename}
+        # original_filename = LUÔN lưu temp_filename để fallback local URL hoạt động
         # ----------------------------------------------------------------
         request_id = None
         verification_code = None
 
-        if user_id:
+        if user_id and _is_valid_uuid(user_id):
             verification_code = f"VF-{uuid.uuid4().hex[:8].upper()}"
 
             db_data = {
                 'user_id': user_id,
-
-                # image_path = storage key trong bucket 'verification-images'
-                # Ví dụ: "2a23e411-1e53-4bbb-a11a-4d1dbaadd4bb/abc123def456.jpg"
-                # Dùng để build URL: SUPABASE_URL/storage/v1/object/public/verification-images/{image_path}
                 'image_path': storage_path or temp_filename,
-
-                'original_filename': image_file.name,
+                # original_filename = temp_filename (UUID.jpg) — KHÔNG phải tên gốc của user
+                # Vì frontend cần tên này để build /media/uploads/{original_filename}
+                'original_filename': temp_filename,
                 'status': pipeline_result['status'],
                 'result_type': pipeline_result.get('result_type'),
                 'verification_code': verification_code,
                 'expires_at': (datetime.utcnow() + timedelta(days=30)).isoformat(),
 
-                # Blur
                 'blur_score': pipeline_result.get('blur_score', 0),
                 'is_blurry': pipeline_result.get('is_blurry', False),
 
-                # Classification
                 'predicted_class': pipeline_result.get('predicted_class'),
                 'confidence': pipeline_result.get('confidence'),
                 'passed_confidence_check': pipeline_result.get('passed_confidence_check', False),
 
-                # Stamp
                 'stamp_detected': pipeline_result.get('stamp_detected', False),
                 'stamp_score': pipeline_result.get('stamp_score', 0.0),
-
-                # Forgery
                 'forgery_score': pipeline_result.get('forgery_score', 0.0),
 
-                # OCR
                 'extracted_text': pipeline_result.get('extracted_text'),
                 'ocr_confidence': pipeline_result.get('ocr_confidence'),
                 'household_name': pipeline_result.get('household_name'),
@@ -295,17 +284,14 @@ def verify_image(request):
                 'household_id_number': pipeline_result.get('household_id_number'),
                 'province': pipeline_result.get('province'),
 
-                # Thời gian
                 'processing_time_ms': pipeline_result.get('processing_time_ms', 0),
                 'message': pipeline_result.get('message', ''),
                 'need_retry': pipeline_result.get('need_retry', True),
 
-                # Vị trí
                 'user_latitude': latitude,
                 'user_longitude': longitude,
                 'user_location_address': address,
 
-                # Vật dụng tiếp tế
                 'support_categories': support_categories if support_categories else None,
             }
 
@@ -322,14 +308,16 @@ def verify_image(request):
                 'processing_time_ms': pipeline_result.get('processing_time_ms'),
                 'support_categories': support_categories,
                 'storage_path': storage_path,
+                'local_filename': temp_filename,
             })
 
         # ----------------------------------------------------------------
-        # Bước 5: Xóa file tạm (ảnh đã upload Storage rồi)
+        # Bước 5: KHÔNG XÓA file local nữa!
+        # File được giữ lại trong /media/uploads/ để fallback khi Storage fail.
+        # Cron job hoặc lệnh thủ công sẽ dọn file cũ định kỳ (>30 ngày).
         # ----------------------------------------------------------------
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-            logger.info(f"Temp file removed: {temp_path}")
+        # Trước đây: os.remove(temp_path) → khiến frontend không load được ảnh
+        # Hiện tại: GIỮ LẠI
 
         # ----------------------------------------------------------------
         # Bước 6: Trả response
@@ -365,7 +353,7 @@ def verify_image(request):
 
     except Exception as e:
         logger.exception(f"Verify error: {e}")
-        # Dọn file tạm nếu còn
+        # Khi có lỗi nghiêm trọng → vẫn dọn file để tránh rác
         try:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -387,7 +375,7 @@ def _safe_insert(db_data: dict) -> dict:
         optional_cols = [
             'forgery_score', 'stamp_detected', 'stamp_score', 'is_blurry',
             'passed_confidence_check', 'ocr_confidence', 'province',
-            'original_filename', 'image_storage_path', 'verified_at',
+            'image_storage_path', 'verified_at',
             'expires_at', 'support_categories',
         ]
         reduced = {k: v for k, v in db_data.items() if k not in optional_cols}
@@ -398,6 +386,7 @@ def _safe_insert(db_data: dict) -> dict:
             minimal = {
                 'user_id': db_data.get('user_id'),
                 'image_path': db_data.get('image_path', ''),
+                'original_filename': db_data.get('original_filename', ''),
                 'status': db_data.get('status', 'failed'),
                 'result_type': db_data.get('result_type'),
                 'verification_code': db_data.get('verification_code'),
@@ -418,7 +407,6 @@ def _safe_insert(db_data: dict) -> dict:
 @permission_classes([AllowAny])
 def get_verified_locations(request):
     try:
-        from .supabase_service import get_supabase_client
         supabase = get_supabase_client()
         result = (
             supabase.table('verification_requests')
@@ -434,7 +422,6 @@ def get_verified_locations(request):
     except Exception as e:
         logger.error(f"get_verified_locations error: {e}")
         try:
-            from .supabase_service import get_supabase_client
             supabase = get_supabase_client()
             result = (
                 supabase.table('verification_requests')
@@ -507,14 +494,58 @@ def admin_requests(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def admin_review(request):
+    """
+    Admin duyệt/từ chối hồ sơ.
+    
+    Request body:
+        request_id (int):  ID của hồ sơ — bắt buộc
+        admin_id (str):    UUID của admin (tùy chọn — nếu không UUID hợp lệ sẽ bỏ qua)
+        notes (str):       Ghi chú
+        action (str):      'approve' | 'reject' (tùy chọn — quyết định status mới)
+    
+    FIX: Trước đây gửi admin_id='admin-user' (string) gây lỗi UUID.
+    Bây giờ validate UUID, nếu không hợp lệ thì vẫn cập nhật notes + status.
+    """
     request_id = request.data.get('request_id')
     admin_id = request.data.get('admin_id')
     notes = request.data.get('notes', '')
-    if not request_id or not admin_id:
-        return Response({'error': 'Thieu request_id hoac admin_id'}, status=status.HTTP_400_BAD_REQUEST)
-    result = admin_review_request(int(request_id), admin_id, notes)
-    create_audit_log(admin_id, 'admin_review', 'verification_requests', request_id, {'notes': notes})
-    return Response({'data': result})
+    action = request.data.get('action', '').lower()
+
+    if not request_id:
+        return Response({'error': 'Thieu request_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Xác định status mới dựa trên action
+    new_status = None
+    if action == 'approve':
+        new_status = 'success'
+    elif action == 'reject':
+        new_status = 'failed'
+    elif not action and notes:
+        # Không có action → đoán từ notes (backward compat với frontend cũ)
+        notes_lower = notes.lower()
+        if 'phê duyệt' in notes_lower or 'duyệt' in notes_lower or 'approve' in notes_lower:
+            new_status = 'success'
+        elif 'từ chối' in notes_lower or 'reject' in notes_lower:
+            new_status = 'failed'
+
+    # Validate admin_id — nếu không phải UUID hợp lệ thì set None
+    safe_admin_id = admin_id if _is_valid_uuid(admin_id) else None
+    if admin_id and not safe_admin_id:
+        logger.info(f"admin_id '{admin_id}' không phải UUID, vẫn cập nhật notes/status")
+
+    result = admin_review_request(int(request_id), safe_admin_id, notes, new_status=new_status)
+
+    create_audit_log(safe_admin_id, 'admin_review', 'verification_requests', request_id, {
+        'notes': notes,
+        'action': action,
+        'new_status': new_status,
+    })
+
+    return Response({
+        'success': True,
+        'data': result,
+        'new_status': new_status,
+    })
 
 
 @api_view(['GET'])
@@ -532,7 +563,11 @@ def admin_toggle_user(request):
     if not user_id:
         return Response({'error': 'Thieu user_id'}, status=status.HTTP_400_BAD_REQUEST)
     result = toggle_user_status(user_id, is_active)
-    admin_id = str(request.user.id) if request.user and request.user.is_authenticated else 'system'
+    
+    admin_id = None
+    if request.user and request.user.is_authenticated:
+        admin_id = str(request.user.id) if _is_valid_uuid(str(request.user.id)) else None
+    
     create_audit_log(admin_id, 'toggle_user', 'users', user_id, {'is_active': is_active})
     return Response({'data': result})
 

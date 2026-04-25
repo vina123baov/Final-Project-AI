@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from typing import Optional
 from supabase import create_client, Client
 from django.conf import settings
@@ -8,11 +9,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Supabase client với timeout 5 giây — tránh treo request
+# Supabase client với timeout 15s + retry logic
+# Trước đây timeout 5s gây SSL handshake timeout liên tục.
 # ============================================================================
 
 _service_client: Optional[Client] = None
 _anon_client: Optional[Client] = None
+
+# Timeout dài hơn cho mạng VN ↔ Supabase US
+SUPABASE_TIMEOUT = 15.0
+MAX_RETRIES = 2  # Retry tối đa 2 lần khi timeout
 
 
 def get_supabase_client() -> Client:
@@ -32,10 +38,13 @@ def get_supabase_anon_client() -> Client:
 
 
 def _create_client(key: str) -> Client:
-    """Tạo Supabase client với timeout 5s"""
+    """Tạo Supabase client với timeout 15s"""
     client = create_client(settings.SUPABASE_URL, key)
-    # Set timeout 5 giây cho tất cả requests
-    client.postgrest.session.timeout = 8.0
+    # Set timeout 15 giây — đủ thời gian cho SSL handshake + query
+    try:
+        client.postgrest.session.timeout = SUPABASE_TIMEOUT
+    except Exception:
+        pass
     return client
 
 
@@ -46,20 +55,49 @@ def _reset_clients():
     _anon_client = None
 
 
-def _safe_execute(query_fn, fallback=None):
+def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
     """
-    Wrapper chạy Supabase query an toàn.
-    Nếu timeout/lỗi mạng → reset client và trả về fallback thay vì crash.
+    Wrapper chạy Supabase query an toàn với retry.
+
+    Khi gặp timeout/SSL error → reset client và retry.
+    Sau khi hết retry → trả về fallback thay vì crash.
     """
-    try:
-        return query_fn()
-    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
-        logger.warning(f"Supabase connection issue: {e} — resetting client")
-        _reset_clients()
-        return fallback
-    except Exception as e:
-        logger.error(f"Supabase error: {e}")
-        return fallback
+    last_error = None
+
+    for attempt in range(retries + 1):
+        try:
+            return query_fn()
+
+        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.RemoteProtocolError,
+                httpx.ConnectError, httpx.PoolTimeout) as e:
+            last_error = e
+            logger.warning(
+                f"Supabase connection issue (attempt {attempt + 1}/{retries + 1}): {e}"
+            )
+            _reset_clients()
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))  # Backoff nhẹ
+                continue
+
+        except Exception as e:
+            # SSL handshake timeout & các lỗi network khác — cũng retry
+            err_str = str(e).lower()
+            if 'timeout' in err_str or 'ssl' in err_str or 'handshake' in err_str or 'connection' in err_str:
+                last_error = e
+                logger.warning(
+                    f"Supabase network/SSL issue (attempt {attempt + 1}/{retries + 1}): {e}"
+                )
+                _reset_clients()
+                if attempt < retries:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+            else:
+                # Lỗi khác (vd: invalid SQL, permission) — không retry, log ra
+                logger.error(f"Supabase error: {e}")
+                return fallback
+
+    logger.error(f"Supabase failed after {retries + 1} attempts: {last_error}")
+    return fallback
 
 
 # ============================================================================
@@ -206,13 +244,40 @@ def get_all_verification_requests(status: Optional[str] = None, limit: int = 100
     return _safe_execute(_run, fallback=[])
 
 
-def admin_review_request(request_id: int, admin_id: str, notes: str) -> dict:
+def admin_review_request(request_id: int, admin_id: Optional[str], notes: str,
+                          new_status: Optional[str] = None) -> dict:
+    """
+    Cập nhật review của admin.
+    
+    admin_id: phải là UUID hợp lệ (từ Supabase Auth) hoặc None.
+              Nếu là string không phải UUID (vd 'admin-user') → bỏ qua field này
+              để tránh lỗi 'invalid input syntax for type uuid'.
+    new_status: Tùy chọn — cập nhật luôn status (success/failed) khi duyệt/từ chối.
+    """
     from datetime import datetime
-    return update_verification_request(request_id, {
-        'reviewed_by': admin_id,
+    import re
+
+    update_data: dict = {
         'reviewed_at': datetime.utcnow().isoformat(),
         'admin_notes': notes,
-    })
+    }
+
+    # Validate admin_id phải là UUID hợp lệ
+    UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    if admin_id and UUID_PATTERN.match(str(admin_id)):
+        update_data['reviewed_by'] = admin_id
+    else:
+        # admin_id không hợp lệ → log nhưng vẫn cập nhật được note + status
+        if admin_id:
+            logger.warning(f"admin_id '{admin_id}' không phải UUID hợp lệ, bỏ qua reviewed_by")
+
+    # Cập nhật status nếu có
+    if new_status:
+        update_data['status'] = new_status
+        if new_status == 'success':
+            update_data['verified_at'] = datetime.utcnow().isoformat()
+
+    return update_verification_request(request_id, update_data)
 
 
 # ============================================================================
@@ -221,9 +286,18 @@ def admin_review_request(request_id: int, admin_id: str, notes: str) -> dict:
 
 def create_audit_log(user_id: Optional[str], action: str, entity_type: str = None,
                      entity_id=None, details: dict = None):
+    """
+    Audit log — không bao giờ block request chính.
+    Nếu user_id không phải UUID hợp lệ → set None.
+    """
+    import re
+    UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    
+    safe_user_id = user_id if (user_id and UUID_PATTERN.match(str(user_id))) else None
+
     def _run():
         get_supabase_client().table('audit_logs').insert({
-            'user_id': user_id,
+            'user_id': safe_user_id,
             'action': action,
             'entity_type': entity_type,
             'entity_id': str(entity_id) if entity_id else None,
@@ -231,9 +305,9 @@ def create_audit_log(user_id: Optional[str], action: str, entity_type: str = Non
         }).execute()
 
     try:
-        _safe_execute(_run)
+        _safe_execute(_run, retries=0)  # Audit log không retry để tránh chậm
     except Exception as e:
-        logger.error(f"Audit log error: {e}")
+        logger.error(f"Audit log error (non-critical): {e}")
 
 
 # ============================================================================
@@ -241,17 +315,29 @@ def create_audit_log(user_id: Optional[str], action: str, entity_type: str = Non
 # ============================================================================
 
 def upload_image_to_storage(user_id: str, file_path: str, file_name: str) -> Optional[str]:
-    try:
-        storage_path = f"{user_id}/{file_name}"
-        with open(file_path, 'rb') as f:
-            get_supabase_client().storage.from_('verification-images').upload(
-                path=storage_path, file=f,
-                file_options={"content-type": "image/jpeg"}
-            )
-        return storage_path
-    except Exception as e:
-        logger.error(f"Storage upload error: {e}")
-        return None
+    """Upload với retry — quan trọng cho việc admin xem ảnh sau này"""
+    storage_path = f"{user_id}/{file_name}"
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            with open(file_path, 'rb') as f:
+                get_supabase_client().storage.from_('verification-images').upload(
+                    path=storage_path, file=f,
+                    file_options={"content-type": "image/jpeg", "cache-control": "3600"}
+                )
+            logger.info(f"Storage upload OK (attempt {attempt + 1}): {storage_path}")
+            return storage_path
+        except Exception as e:
+            err_str = str(e).lower()
+            if attempt < MAX_RETRIES and ('timeout' in err_str or 'reset' in err_str or 'ssl' in err_str):
+                logger.warning(f"Storage upload retry {attempt + 1}: {e}")
+                _reset_clients()
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            logger.error(f"Storage upload failed: {e}")
+            return None
+
+    return None
 
 
 def delete_image_from_storage(storage_path: str):
