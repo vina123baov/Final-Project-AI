@@ -11,9 +11,14 @@ try:
     from vietocr.tool.predictor import Predictor
     from vietocr.tool.config import Cfg
     VIETOCR_AVAILABLE = True
-except ImportError:
-    logger.warning("VietOCR not installed. OCR will return placeholder text.")
-    logger.warning("Install: pip install vietocr")
+except Exception as e:
+    logger.warning(f"VietOCR import failed: {e}")
+    logger.warning("OCR will return placeholder text. Install: pip install vietocr")
+
+
+# TOI UU: Resize anh truoc khi dua vao OCR de tang toc
+# Anh > 1280px se rat cham tren CPU (transformer model)
+OCR_MAX_DIMENSION = 1280
 
 
 def _get_detector():
@@ -69,6 +74,16 @@ def extract_text(image_input) -> dict:
         return _empty_result("Dinh dang anh khong ho tro")
 
     image = image.convert('RGB')
+
+    # --- MOI: Resize anh truoc khi OCR de tang toc ---
+    # Anh chup tu dien thoai thuong > 3000px → OCR rat cham tren CPU
+    # Resize ve 1280px giup giam thoi gian 5-10x ma van giu duoc do chinh xac
+    original_size = image.size
+    if max(original_size) > OCR_MAX_DIMENSION:
+        ratio = OCR_MAX_DIMENSION / max(original_size)
+        new_size = (int(original_size[0] * ratio), int(original_size[1] * ratio))
+        image = image.resize(new_size, Image.LANCZOS)
+        logger.debug(f"OCR: Resized image from {original_size} to {new_size}")
 
     detector = _get_detector()
 

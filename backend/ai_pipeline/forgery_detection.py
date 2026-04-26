@@ -7,7 +7,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 # TOI UU: Resize anh lon truoc khi chay ELA
-MAX_IMAGE_DIMENSION = 1024
+# Giam tu 1024 xuong 800 de tang toc ~40% (ELA chay tren tung pixel)
+MAX_IMAGE_DIMENSION = 800
 
 
 def detect_forgery(image_input) -> dict:

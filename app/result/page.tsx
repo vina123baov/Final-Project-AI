@@ -55,7 +55,7 @@ const STATUS_CONFIG: Record<string, {
     iconClass: 'text-warning',
     title: 'Đang Chờ Xét Duyệt',
     subtitle: 'Hồ sơ của bạn đã được ghi nhận và đang chờ nhân viên xem xét thủ công.',
-    badge: '⏳ Chờ duyệt',
+    badge: ' Chờ duyệt',
     badgeClass: 'bg-warning/15 text-warning border-warning/30',
     showRetry: false,
   },
@@ -66,7 +66,7 @@ const STATUS_CONFIG: Record<string, {
     textClass: 'text-blue-600',
     iconClass: 'text-blue-500',
     title: 'Cần Xem Xét Thêm',
-    subtitle: 'Tài liệu cần được nhân viên kiểm tra kỹ hơn trước khi xác nhận.',
+    subtitle: 'Tài liệu cần được admin kiểm tra kỹ hơn trước khi xác nhận.',
     badge: '🔍 Đang xem xét',
     badgeClass: 'bg-blue-500/15 text-blue-600 border-blue-500/30',
     showRetry: false,
@@ -86,17 +86,17 @@ const STATUS_CONFIG: Record<string, {
 }
 
 const RESULT_TYPE_LABELS: Record<string, { label: string; icon: string; desc: string }> = {
-  success: { label: 'Xác minh thành công', icon: '✅', desc: 'Sổ hộ nghèo hợp lệ' },
+  success: { label: 'Xác minh thành công', icon: '', desc: 'Sổ hộ nghèo hợp lệ' },
   blur: { label: 'Ảnh quá mờ', icon: '📷', desc: 'Vui lòng chụp lại rõ hơn' },
-  review_blur: { label: 'Con dấu/chữ ký mờ', icon: '🔍', desc: 'Gửi để xem xét thủ công' },
-  review_forgery: { label: 'Nghi ngờ nhẹ', icon: '🛡️', desc: 'Kiểm tra tính xác thực' },
-  pending_forgery: { label: 'Nghi ngờ vừa', icon: '⚠️', desc: 'Chờ admin xác nhận' },
-  pending_no_stamp: { label: 'Không tìm thấy con dấu', icon: '🔎', desc: 'Chờ admin xác nhận' },
-  pending_low_confidence: { label: 'Độ tin cậy biên giới', icon: '📊', desc: 'Chờ admin xác nhận' },
-  wrong_doc: { label: 'Sai tài liệu', icon: '📄', desc: 'Không phải sổ hộ nghèo' },
-  invalid: { label: 'Ảnh không hợp lệ', icon: '🚫', desc: 'Vui lòng chụp lại' },
-  low_confidence: { label: 'Độ tin cậy thấp', icon: '📉', desc: 'Không nhận diện được' },
-  forgery: { label: 'Phát hiện giả mạo', icon: '🚨', desc: 'Ảnh có dấu hiệu chỉnh sửa' },
+  review_blur: { label: 'Con dấu/chữ ký mờ', icon: '', desc: 'Gửi để xem xét thủ công' },
+  review_forgery: { label: 'Nghi ngờ nhẹ', icon: '', desc: 'Kiểm tra tính xác thực' },
+  pending_forgery: { label: 'Nghi ngờ vừa', icon: '', desc: 'Chờ admin xác nhận' },
+  pending_no_stamp: { label: 'Không tìm thấy con dấu', icon: '', desc: 'Chờ admin xác nhận' },
+  pending_low_confidence: { label: 'Độ tin cậy biên giới', icon: '', desc: 'Chờ admin xác nhận' },
+  wrong_doc: { label: 'Sai tài liệu', icon: '', desc: 'Không phải sổ hộ nghèo' },
+  invalid: { label: 'Ảnh không hợp lệ', icon: '', desc: 'Vui lòng chụp lại' },
+  low_confidence: { label: 'Độ tin cậy thấp', icon: '', desc: 'Không nhận diện được' },
+  forgery: { label: 'Phát hiện giả mạo', icon: '', desc: 'Ảnh có dấu hiệu chỉnh sửa' },
 }
 
 // Timeline steps cho pending/review
@@ -237,7 +237,7 @@ export default function ResultPage() {
                 <div className="mt-3 p-4 bg-secondary/40 rounded-lg">
                   <p className="text-sm text-muted-foreground">
                     <strong className="text-foreground">Lý do chuyển sang xét duyệt: </strong>
-                    {data.result_type === 'review_blur' && 'Con dấu hoặc chữ ký trong ảnh bị mờ, khó đọc chính xác. Ảnh vẫn có thể hợp lệ — nhân viên sẽ xác nhận trực tiếp.'}
+                    {data.result_type === 'review_blur' && 'Con dấu hoặc chữ ký trong ảnh bị mờ, khó đọc chính xác. Ảnh vẫn có thể hợp lệ, nhân viên sẽ xác nhận trực tiếp.'}
                     {data.result_type === 'review_forgery' && 'Hệ thống phát hiện một số dấu hiệu bất thường nhẹ trong ảnh. Thường là do chất lượng ảnh, không phải giả mạo.'}
                     {data.result_type === 'pending_forgery' && 'Ảnh có một số điểm bất thường cần xác minh thêm. Nhân viên sẽ kiểm tra chi tiết.'}
                     {data.result_type === 'pending_no_stamp' && 'Hệ thống không tìm thấy con dấu đỏ rõ ràng. Nếu sổ có con dấu, nhân viên sẽ xác nhận.'}

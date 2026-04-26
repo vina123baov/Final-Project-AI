@@ -144,7 +144,7 @@ const RESULT_TYPE_LABELS: Record<string, { label: string; color: string; bg: str
 
 const REVIEW_GUIDANCE: Record<string, { title: string; checks: string[]; tip: string }> = {
   review_blur: {
-    title: '📷 Ảnh mờ vùng con dấu/chữ ký',
+    title: ' Ảnh mờ vùng con dấu/chữ ký',
     checks: [
       'Kiểm tra xem con dấu có còn đọc được không',
       'Xác nhận chữ ký của cán bộ phường/xã',

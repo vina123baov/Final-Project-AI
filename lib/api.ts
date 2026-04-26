@@ -1,5 +1,10 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+// FIX: Timeout 30s cho mang VN-Supabase US (truoc day 15s khong du)
+// Verify rieng 60s vi can chay AI pipeline
+const API_TIMEOUT_MS = 30000
+const VERIFY_TIMEOUT_MS = 60000
+
 export interface VerifyResponse {
   success: boolean
   status: 'success' | 'failed' | 'pending' | 'error'
@@ -45,6 +50,14 @@ export interface HistoryRecord {
   household_name: string | null
   household_address: string | null
   support_categories: string[] | null
+}
+
+export interface HistoryResponse {
+  data: HistoryRecord[]
+  count: number
+  _cached?: boolean
+  _stale?: boolean
+  _error?: string
 }
 
 export interface AdminDashboard {
@@ -120,7 +133,6 @@ export interface VerifiedLocation {
   support_categories: string[] | null
 }
 
-// Token management
 let accessToken: string | null = null
 let refreshToken: string | null = null
 
@@ -143,36 +155,77 @@ export function clearTokens() {
   if (typeof window !== 'undefined') { localStorage.removeItem('jwt_access'); localStorage.removeItem('jwt_refresh') }
 }
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+/**
+ * apiFetch — wrapper voi timeout 30s.
+ *
+ * FIX: Truoc day 15s khong du cho mang yeu (Supabase US). Tang len 30s.
+ * Khi timeout: KHONG throw error vao console, chi throw Error message ngan gon.
+ */
+async function apiFetch<T>(path: string, options?: RequestInit, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
   const url = `${API_BASE}${path}`
   const token = getAccessToken()
   const headers: Record<string, string> = {}
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (options?.headers) Object.assign(headers, options.headers)
 
-  const res = await fetch(url, { ...options, headers })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-  if (res.status === 401 && getRefreshToken()) {
-    const refreshed = await refreshAccessToken()
-    if (refreshed) {
-      headers['Authorization'] = `Bearer ${getAccessToken()}`
-      const retryRes = await fetch(url, { ...options, headers })
-      if (!retryRes.ok) throw new Error(`API ${retryRes.status}: ${await retryRes.text()}`)
-      return retryRes.json()
-    } else { clearTokens(); throw new Error('Phiên hết hạn. Đăng nhập lại.') }
+  try {
+    const res = await fetch(url, { ...options, headers, signal: controller.signal })
+    clearTimeout(timeoutId)
+
+    if (res.status === 401 && getRefreshToken()) {
+      const refreshed = await refreshAccessToken()
+      if (refreshed) {
+        headers['Authorization'] = `Bearer ${getAccessToken()}`
+        const retryController = new AbortController()
+        const retryTimeoutId = setTimeout(() => retryController.abort(), timeoutMs)
+        try {
+          const retryRes = await fetch(url, { ...options, headers, signal: retryController.signal })
+          clearTimeout(retryTimeoutId)
+          if (!retryRes.ok) throw new Error(`API ${retryRes.status}`)
+          return retryRes.json()
+        } finally {
+          clearTimeout(retryTimeoutId)
+        }
+      } else {
+        clearTokens()
+        throw new Error('Phiên hết hạn. Đăng nhập lại.')
+      }
+    }
+
+    if (!res.ok) throw new Error(`API ${res.status}`)
+    return res.json()
+  } catch (err) {
+    clearTimeout(timeoutId)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('TIMEOUT')
+    }
+    throw err
   }
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
-  return res.json()
 }
 
 export async function refreshAccessToken(): Promise<boolean> {
   try {
     const refresh = getRefreshToken(); if (!refresh) return false
-    const res = await fetch(`${API_BASE}/api/auth/refresh/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh }) })
-    if (!res.ok) return false
-    const data = await res.json(); accessToken = data.access
-    if (typeof window !== 'undefined') localStorage.setItem('jwt_access', data.access)
-    return true
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/refresh/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh }),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+      if (!res.ok) return false
+      const data = await res.json(); accessToken = data.access
+      if (typeof window !== 'undefined') localStorage.setItem('jwt_access', data.access)
+      return true
+    } finally {
+      clearTimeout(timeoutId)
+    }
   } catch { return false }
 }
 
@@ -191,7 +244,6 @@ export async function register(data: { full_name: string; email: string; phone: 
 export async function getMe(): Promise<UserProfile> { return apiFetch('/api/auth/me/') }
 export async function logout() { clearTokens() }
 
-// === VERIFY — gui kem support_categories ===
 export async function verifyImage(
   imageFile: File,
   userId?: string,
@@ -206,15 +258,51 @@ export async function verifyImage(
     formData.append('longitude', String(location.longitude))
     if (location.address) formData.append('address', location.address)
   }
-  // MOI: gui support_categories
   if (supportCategories && supportCategories.length > 0) {
     formData.append('support_categories', JSON.stringify(supportCategories))
   }
-  return apiFetch<VerifyResponse>('/api/verify/', { method: 'POST', body: formData })
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS)
+
+  const token = getAccessToken()
+  const headers: Record<string, string> = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  try {
+    const res = await fetch(`${API_BASE}/api/verify/`, {
+      method: 'POST',
+      body: formData,
+      headers,
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`)
+    return res.json()
+  } catch (err) {
+    clearTimeout(timeoutId)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Xác minh quá lâu (>60s). Vui lòng thử lại với ảnh nhỏ hơn.')
+    }
+    throw err
+  }
 }
 
 export async function getResult(requestId: number): Promise<AdminRequest> { return apiFetch(`/api/result/${requestId}/`) }
-export async function getHistory(userId: string, limit: number = 50): Promise<{ data: HistoryRecord[]; count: number }> { return apiFetch(`/api/history/?user_id=${encodeURIComponent(userId)}&limit=${limit}`) }
+
+/**
+ * Lich su user - co cache 60s o backend.
+ * 
+ * FIX: Tra ve raw response thay vi throw — frontend tu xu ly truong hop:
+ *   - data co _stale = true: hien thi data nhung warn "data co the cu"
+ *   - data co _error: hien thong bao "khong tai duoc, mang cham"
+ *   - timeout: trong rang neu co cache cu thi backend tra ve, frontend
+ *     khong bao gio thay error nua sau lan dau load thanh cong
+ */
+export async function getHistory(userId: string, limit: number = 30): Promise<HistoryResponse> {
+  return apiFetch(`/api/history/?user_id=${encodeURIComponent(userId)}&limit=${limit}`)
+}
+
 export async function getAdminDashboard(): Promise<AdminDashboard> { return apiFetch('/api/admin/dashboard/') }
 export async function getAdminRequests(status?: string, limit: number = 100): Promise<{ data: AdminRequest[]; count: number }> { let url = `/api/admin/requests/?limit=${limit}`; if (status) url += `&status=${encodeURIComponent(status)}`; return apiFetch(url) }
 export async function adminReview(requestId: number, adminId: string, notes: string): Promise<{ data: AdminRequest }> { return apiFetch('/api/admin/review/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: requestId, admin_id: adminId, notes }) }) }

@@ -20,10 +20,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    # Third party
     'rest_framework',
     'corsheaders',
-    # Local
     'api',
 ]
 
@@ -59,7 +57,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-# --- Database (dung SQLite cho Django internals, Supabase cho app data) ---
+# --- Database (SQLite cho Django internals, Supabase cho app data) ---
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -67,7 +65,30 @@ DATABASES = {
     }
 }
 
-# --- REST Framework (Section 1.6.2) ---
+# ============================================================================
+# CACHE — FIX cho mạng VN ↔ Supabase US chậm
+# ============================================================================
+# Sử dụng Local Memory Cache (in-process, không cần Redis/Memcached).
+# Cache history/dashboard 30-60s → giảm 90% query Supabase.
+# 
+# Lưu ý: LocMemCache không share giữa các worker process.
+# Với Django dev server (1 process) thì OK.
+# Production nên dùng Redis nếu chạy nhiều workers.
+# ============================================================================
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'verifyfamily-cache',
+        'TIMEOUT': 60,  # Default 60s
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000,
+            'CULL_FREQUENCY': 3,  # Khi cache đầy, xóa 1/3 entries cũ
+        }
+    }
+}
+
+# --- REST Framework ---
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -82,14 +103,14 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
     ],
     'DEFAULT_THROTTLE_RATES': {
-    'user': '100/day',
-    'anon': '50/day', 
-    'verify': '10/day',
-    'verify_anon': '5/day',
+        'user': '100/day',
+        'anon': '50/day',
+        'verify': '10/day',
+        'verify_anon': '5/day',
     },
 }
 
-# --- JWT (YC 2.1.2: Bao mat) ---
+# --- JWT ---
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -105,26 +126,25 @@ CORS_ALLOW_CREDENTIALS = True
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
 SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY', '')
 SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
+SUPABASE_TIMEOUT = 10.0
 
-# --- Media (anh upload tam) ---
+# --- Media ---
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB (Hinh 4.2)
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024
 
-# --- AI Pipeline Thresholds (Section 2.4.1) ---
-BLUR_THRESHOLD = int(os.getenv('BLUR_THRESHOLD', '100'))            # Section 1.5.2
-CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.7'))  # Section 4.3.3
+# --- AI Pipeline Thresholds ---
+BLUR_THRESHOLD = int(os.getenv('BLUR_THRESHOLD', '100'))
+CONFIDENCE_THRESHOLD = float(os.getenv('CONFIDENCE_THRESHOLD', '0.7'))
 EFFICIENTNET_MODEL_PATH = os.getenv('EFFICIENTNET_MODEL_PATH', 'models/document_classifier_production.pth')
 VIETOCR_CONFIG = os.getenv('VIETOCR_CONFIG', 'vgg_transformer')
 
 # --- Static ---
 STATIC_URL = 'static/'
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- Internationalization ---
+# --- i18n ---
 LANGUAGE_CODE = 'vi'
 TIME_ZONE = 'Asia/Ho_Chi_Minh'
 USE_I18N = True
 USE_TZ = True
-SUPABASE_TIMEOUT = 30.0

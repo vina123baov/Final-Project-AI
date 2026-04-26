@@ -2,10 +2,12 @@ import os
 import uuid
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes, throttle_classes
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -33,15 +35,36 @@ from ai_pipeline.pipeline import run_pipeline
 
 logger = logging.getLogger(__name__)
 
-# Regex validate UUID
 UUID_PATTERN = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
     re.IGNORECASE
 )
 
+# Bật/tắt Storage upload
+ENABLE_STORAGE_UPLOAD = True
+
+# ============================================================================
+# CACHE SETTINGS
+# ============================================================================
+# History cache 60s — lần đầu tốn ~10s, lần 2 trở đi gần như tức thời
+# Verify mới sẽ invalidate cache (xóa key user_id) → user thấy data mới ngay
+CACHE_HISTORY_TTL = 60
+CACHE_DASHBOARD_TTL = 30
+CACHE_LOCATIONS_TTL = 60
+CACHE_REQUESTS_TTL = 20
+
+
+def _cache_key_history(user_id: str, limit: int) -> str:
+    return f"history:{user_id}:{limit}"
+
+
+def _invalidate_user_history_cache(user_id: str):
+    """Xóa cache history của user khi có verify mới"""
+    for limit in [10, 20, 30, 50, 100]:
+        cache.delete(_cache_key_history(user_id, limit))
+
 
 def _is_valid_uuid(value: str) -> bool:
-    """Kiểm tra string có phải UUID hợp lệ không"""
     if not value:
         return False
     return bool(UUID_PATTERN.match(str(value)))
@@ -61,7 +84,7 @@ class VerifyAnonRateThrottle(AnonRateThrottle):
 
 
 # ============================================================================
-# AUTH ENDPOINTS (UC01, UC02)
+# AUTH ENDPOINTS
 # ============================================================================
 
 @api_view(['POST'])
@@ -122,14 +145,10 @@ def auth_me(request):
 
 
 # ============================================================================
-# Helper: Upload ảnh lên Supabase Storage
+# Storage upload helpers
 # ============================================================================
 
-def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, content_type: str) -> str | None:
-    """
-    Upload file ảnh lên Supabase Storage bucket 'verification-images'.
-    Trả về storage_key hoặc None nếu fail.
-    """
+def _upload_image_to_storage_sync(temp_path: str, user_id: str, filename: str, content_type: str) -> str | None:
     try:
         storage_key = f"{user_id}/{filename}" if user_id else f"anonymous/{filename}"
 
@@ -151,6 +170,25 @@ def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, conten
         return None
 
 
+def _upload_image_async(temp_path: str, user_id: str, filename: str, content_type: str, request_id: int):
+    def _worker():
+        try:
+            storage_key = _upload_image_to_storage_sync(temp_path, user_id, filename, content_type)
+            if storage_key and request_id:
+                try:
+                    update_verification_request(request_id, {'image_path': storage_key})
+                    logger.info(f"Async storage upload + DB update OK for request #{request_id}")
+                except Exception as e:
+                    logger.warning(f"Async DB update failed for request #{request_id}: {e}")
+            elif not storage_key:
+                logger.info(f"Async storage upload skipped/failed for request #{request_id}")
+        except Exception as e:
+            logger.warning(f"Async upload thread error: {e}")
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+
 # ============================================================================
 # POST /api/verify/ — UC03
 # ============================================================================
@@ -159,12 +197,6 @@ def _upload_image_to_storage(temp_path: str, user_id: str, filename: str, conten
 @permission_classes([AllowAny])
 @parser_classes([MultiPartParser, FormParser])
 def verify_image(request):
-    """
-    POST /api/verify/
-    
-    QUAN TRỌNG: Sau khi upload xong, file local trong /media/uploads/ ĐƯỢC GIỮ LẠI
-    để frontend có thể hiển thị ảnh khi Supabase Storage upload bị fail (StreamReset).
-    """
     serializer = VerifyImageSerializer(data=request.data)
     if not serializer.is_valid():
         return Response({
@@ -179,7 +211,6 @@ def verify_image(request):
             'message': 'Vui long chon anh', 'data': {},
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Lấy user_id
     user_id = None
     if request.user and request.user.is_authenticated:
         user_id = str(request.user.id)
@@ -190,7 +221,6 @@ def verify_image(request):
     longitude = serializer.validated_data.get('longitude')
     address = serializer.validated_data.get('address', '')
 
-    # Lấy support_categories
     support_categories = request.data.getlist('support_categories', [])
     if not support_categories:
         cats_str = request.data.get('support_categories', '')
@@ -204,10 +234,6 @@ def verify_image(request):
     temp_path = None
 
     try:
-        # ----------------------------------------------------------------
-        # Bước 1: Lưu ảnh vào /media/uploads/
-        # File này sẽ được GIỮ LẠI làm backup nếu Storage upload fail.
-        # ----------------------------------------------------------------
         upload_dir = os.path.join(settings.MEDIA_ROOT, 'uploads')
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -221,9 +247,6 @@ def verify_image(request):
 
         logger.info(f"Image saved locally: {temp_path} ({image_file.size} bytes)")
 
-        # ----------------------------------------------------------------
-        # Bước 2: Chạy AI Pipeline
-        # ----------------------------------------------------------------
         pipeline_result = run_pipeline(temp_path)
 
         logger.info(
@@ -233,22 +256,6 @@ def verify_image(request):
             f"time={pipeline_result.get('processing_time_ms', 0)}ms"
         )
 
-        # ----------------------------------------------------------------
-        # Bước 3: Upload lên Supabase Storage (best-effort)
-        # ----------------------------------------------------------------
-        storage_path = _upload_image_to_storage(
-            temp_path=temp_path,
-            user_id=user_id or 'anonymous',
-            filename=temp_filename,
-            content_type=image_file.content_type or 'image/jpeg',
-        )
-
-        # ----------------------------------------------------------------
-        # Bước 4: Lưu vào DB
-        # image_path = storage_key NẾU upload thành công
-        # image_path = filename gốc (chỉ tên file) → frontend dùng /media/uploads/{filename}
-        # original_filename = LUÔN lưu temp_filename để fallback local URL hoạt động
-        # ----------------------------------------------------------------
         request_id = None
         verification_code = None
 
@@ -257,9 +264,7 @@ def verify_image(request):
 
             db_data = {
                 'user_id': user_id,
-                'image_path': storage_path or temp_filename,
-                # original_filename = temp_filename (UUID.jpg) — KHÔNG phải tên gốc của user
-                # Vì frontend cần tên này để build /media/uploads/{original_filename}
+                'image_path': temp_filename,
                 'original_filename': temp_filename,
                 'status': pipeline_result['status'],
                 'result_type': pipeline_result.get('result_type'),
@@ -301,27 +306,32 @@ def verify_image(request):
             db_record = _safe_insert(db_data)
             request_id = db_record.get('id') if db_record else None
 
+            # FIX: Invalidate cache history khi có verify mới
+            _invalidate_user_history_cache(user_id)
+            cache.delete('verified_locations')
+            logger.info(f"Cache invalidated for user {user_id}")
+
             create_audit_log(user_id, 'verify_image', 'verification_requests', request_id, {
                 'verification_code': verification_code,
                 'result_type': pipeline_result.get('result_type'),
                 'confidence': pipeline_result.get('confidence'),
                 'processing_time_ms': pipeline_result.get('processing_time_ms'),
                 'support_categories': support_categories,
-                'storage_path': storage_path,
                 'local_filename': temp_filename,
             })
 
-        # ----------------------------------------------------------------
-        # Bước 5: KHÔNG XÓA file local nữa!
-        # File được giữ lại trong /media/uploads/ để fallback khi Storage fail.
-        # Cron job hoặc lệnh thủ công sẽ dọn file cũ định kỳ (>30 ngày).
-        # ----------------------------------------------------------------
-        # Trước đây: os.remove(temp_path) → khiến frontend không load được ảnh
-        # Hiện tại: GIỮ LẠI
+        if ENABLE_STORAGE_UPLOAD and request_id:
+            _upload_image_async(
+                temp_path=temp_path,
+                user_id=user_id or 'anonymous',
+                filename=temp_filename,
+                content_type=image_file.content_type or 'image/jpeg',
+                request_id=request_id,
+            )
+            logger.info(f"Storage upload scheduled in background for request #{request_id}")
+        else:
+            logger.info("Storage upload disabled or no request_id, using local file only")
 
-        # ----------------------------------------------------------------
-        # Bước 6: Trả response
-        # ----------------------------------------------------------------
         is_success = pipeline_result['status'] == 'success'
         return Response({
             'success': is_success,
@@ -353,7 +363,6 @@ def verify_image(request):
 
     except Exception as e:
         logger.exception(f"Verify error: {e}")
-        # Khi có lỗi nghiêm trọng → vẫn dọn file để tránh rác
         try:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -367,7 +376,6 @@ def verify_image(request):
 
 
 def _safe_insert(db_data: dict) -> dict:
-    """Insert với fallback — bỏ bớt cột nếu Supabase báo lỗi cột chưa có."""
     try:
         return create_verification_request(db_data)
     except Exception as e1:
@@ -400,12 +408,19 @@ def _safe_insert(db_data: dict) -> dict:
 
 
 # ============================================================================
-# GET /api/verified-locations/
+# GET /api/verified-locations/ — CÓ CACHE
 # ============================================================================
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_verified_locations(request):
+    # FIX: Cache 60s
+    cache_key = 'verified_locations'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        logger.debug("verified_locations: cache HIT")
+        return Response(cached)
+
     try:
         supabase = get_supabase_client()
         result = (
@@ -418,7 +433,9 @@ def get_verified_locations(request):
             .limit(200)
             .execute()
         )
-        return Response({'data': result.data or [], 'count': len(result.data or [])})
+        response_data = {'data': result.data or [], 'count': len(result.data or [])}
+        cache.set(cache_key, response_data, CACHE_LOCATIONS_TTL)
+        return Response(response_data)
     except Exception as e:
         logger.error(f"get_verified_locations error: {e}")
         try:
@@ -433,14 +450,21 @@ def get_verified_locations(request):
                 .limit(200)
                 .execute()
             )
-            return Response({'data': result.data or [], 'count': len(result.data or [])})
+            response_data = {'data': result.data or [], 'count': len(result.data or [])}
+            cache.set(cache_key, response_data, CACHE_LOCATIONS_TTL)
+            return Response(response_data)
         except Exception as e2:
             logger.error(f"get_verified_locations fallback error: {e2}")
+            # Trả cache cũ nếu có (stale-while-error)
+            stale = cache.get(cache_key + ':stale')
+            if stale:
+                logger.info("Returning stale cache for verified_locations")
+                return Response(stale)
             return Response({'data': [], 'count': 0})
 
 
 # ============================================================================
-# GET /api/result/<id>/ — UC04
+# GET /api/result/<id>/
 # ============================================================================
 
 @api_view(['GET'])
@@ -453,33 +477,78 @@ def get_result(request, request_id):
 
 
 # ============================================================================
-# GET /api/history/ — UC05
+# GET /api/history/ — CÓ CACHE 60s
 # ============================================================================
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_history(request):
+    """
+    Lịch sử user — cache 60s để tránh query Supabase mỗi lần.
+    Khi user verify mới, cache tự động invalidate (xem verify_image).
+    """
     if request.user and request.user.is_authenticated:
         user_id = str(request.user.id)
     else:
         user_id = request.query_params.get('user_id')
+
     if not user_id:
         return Response({'error': 'Thieu user_id'}, status=status.HTTP_400_BAD_REQUEST)
-    limit = int(request.query_params.get('limit', 50))
-    history = get_user_verification_history(user_id, limit=limit)
-    return Response({'data': history, 'count': len(history)})
+
+    limit = int(request.query_params.get('limit', 30))
+    cache_key = _cache_key_history(user_id, limit)
+
+    # Try cache first
+    cached = cache.get(cache_key)
+    if cached is not None:
+        logger.info(f"history cache HIT for user {user_id[:8]}... (limit={limit})")
+        return Response(cached)
+
+    logger.info(f"history cache MISS for user {user_id[:8]}... fetching from Supabase")
+
+    # Fetch fresh data
+    try:
+        history = get_user_verification_history(user_id, limit=limit)
+        response_data = {'data': history, 'count': len(history), '_cached': False}
+        # Cache 60s
+        cache.set(cache_key, response_data, CACHE_HISTORY_TTL)
+        # Backup stale cache (giữ lâu hơn để dùng khi mạng fail)
+        cache.set(cache_key + ':stale', response_data, CACHE_HISTORY_TTL * 10)
+        return Response(response_data)
+    except Exception as e:
+        logger.error(f"History fetch error: {e}")
+        # Fallback: trả stale cache nếu có
+        stale = cache.get(cache_key + ':stale')
+        if stale:
+            logger.info(f"Returning STALE cache for user {user_id[:8]}...")
+            stale['_stale'] = True
+            return Response(stale)
+        # Không có cache nào → trả empty + báo cho frontend biết
+        return Response({
+            'data': [],
+            'count': 0,
+            '_error': 'Không thể tải dữ liệu, mạng có thể chậm'
+        }, status=status.HTTP_200_OK)  # 200 để frontend không treat như fatal error
 
 
 # ============================================================================
-# ADMIN ENDPOINTS (UC06, UC07, UC08)
+# ADMIN ENDPOINTS — CÓ CACHE
 # ============================================================================
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_dashboard(request):
+    cache_key = 'admin_dashboard'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
+
     dashboard = get_admin_dashboard()
     errors = get_error_distribution()
-    return Response({'dashboard': dashboard, 'error_distribution': errors})
+    response_data = {'dashboard': dashboard, 'error_distribution': errors}
+    cache.set(cache_key, response_data, CACHE_DASHBOARD_TTL)
+    cache.set(cache_key + ':stale', response_data, CACHE_DASHBOARD_TTL * 10)
+    return Response(response_data)
 
 
 @api_view(['GET'])
@@ -487,25 +556,22 @@ def admin_dashboard(request):
 def admin_requests(request):
     filter_status = request.query_params.get('status')
     limit = int(request.query_params.get('limit', 50))
+    cache_key = f"admin_requests:{filter_status or 'all'}:{limit}"
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
+
     requests_list = get_all_verification_requests(status=filter_status, limit=limit)
-    return Response({'data': requests_list, 'count': len(requests_list)})
+    response_data = {'data': requests_list, 'count': len(requests_list)}
+    cache.set(cache_key, response_data, CACHE_REQUESTS_TTL)
+    cache.set(cache_key + ':stale', response_data, CACHE_REQUESTS_TTL * 10)
+    return Response(response_data)
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def admin_review(request):
-    """
-    Admin duyệt/từ chối hồ sơ.
-    
-    Request body:
-        request_id (int):  ID của hồ sơ — bắt buộc
-        admin_id (str):    UUID của admin (tùy chọn — nếu không UUID hợp lệ sẽ bỏ qua)
-        notes (str):       Ghi chú
-        action (str):      'approve' | 'reject' (tùy chọn — quyết định status mới)
-    
-    FIX: Trước đây gửi admin_id='admin-user' (string) gây lỗi UUID.
-    Bây giờ validate UUID, nếu không hợp lệ thì vẫn cập nhật notes + status.
-    """
     request_id = request.data.get('request_id')
     admin_id = request.data.get('admin_id')
     notes = request.data.get('notes', '')
@@ -514,26 +580,29 @@ def admin_review(request):
     if not request_id:
         return Response({'error': 'Thieu request_id'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Xác định status mới dựa trên action
     new_status = None
     if action == 'approve':
         new_status = 'success'
     elif action == 'reject':
         new_status = 'failed'
     elif not action and notes:
-        # Không có action → đoán từ notes (backward compat với frontend cũ)
         notes_lower = notes.lower()
         if 'phê duyệt' in notes_lower or 'duyệt' in notes_lower or 'approve' in notes_lower:
             new_status = 'success'
         elif 'từ chối' in notes_lower or 'reject' in notes_lower:
             new_status = 'failed'
 
-    # Validate admin_id — nếu không phải UUID hợp lệ thì set None
     safe_admin_id = admin_id if _is_valid_uuid(admin_id) else None
     if admin_id and not safe_admin_id:
         logger.info(f"admin_id '{admin_id}' không phải UUID, vẫn cập nhật notes/status")
 
     result = admin_review_request(int(request_id), safe_admin_id, notes, new_status=new_status)
+
+    # Invalidate cache khi review
+    cache.delete('admin_dashboard')
+    for s in [None, 'pending', 'review', 'success', 'failed']:
+        for limit in [20, 50, 100]:
+            cache.delete(f"admin_requests:{s or 'all'}:{limit}")
 
     create_audit_log(safe_admin_id, 'admin_review', 'verification_requests', request_id, {
         'notes': notes,
@@ -551,8 +620,15 @@ def admin_review(request):
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def admin_users(request):
+    cache_key = 'admin_users'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
+
     users = get_all_users()
-    return Response({'data': users, 'count': len(users)})
+    response_data = {'data': users, 'count': len(users)}
+    cache.set(cache_key, response_data, 60)
+    return Response(response_data)
 
 
 @api_view(['POST'])
@@ -563,11 +639,12 @@ def admin_toggle_user(request):
     if not user_id:
         return Response({'error': 'Thieu user_id'}, status=status.HTTP_400_BAD_REQUEST)
     result = toggle_user_status(user_id, is_active)
-    
+    cache.delete('admin_users')
+
     admin_id = None
     if request.user and request.user.is_authenticated:
         admin_id = str(request.user.id) if _is_valid_uuid(str(request.user.id)) else None
-    
+
     create_audit_log(admin_id, 'toggle_user', 'users', user_id, {'is_active': is_active})
     return Response({'data': result})
 
@@ -588,5 +665,10 @@ def health_check(request):
         'blur_threshold': getattr(settings, 'BLUR_THRESHOLD', 100),
         'confidence_threshold': getattr(settings, 'CONFIDENCE_THRESHOLD', 0.7),
         'supabase_connected': bool(settings.SUPABASE_URL),
-        'rate_limit': '10/day per user',
+        'storage_upload_enabled': ENABLE_STORAGE_UPLOAD,
+        'cache_ttl': {
+            'history': CACHE_HISTORY_TTL,
+            'dashboard': CACHE_DASHBOARD_TTL,
+            'locations': CACHE_LOCATIONS_TTL,
+        },
     })

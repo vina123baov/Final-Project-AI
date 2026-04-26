@@ -21,7 +21,7 @@ MESSAGES = {
     'no_stamp': 'Không phát hiện con dấu chính quyền.',
     'so_ho_ngheo': 'Xác minh thành công!',
     'pending_low_confidence': 'Độ tin cậy chưa đủ cao — chuyển sang xem xét thủ công.',
-    'pending_no_stamp': 'Không tìm thấy con dấu rõ ràng — chuyển sang xem xét thủ công.',
+    'pending_no_stamp': 'Nghi vấn giả mạo - chuyển sang xem xét thủ công.',
     'pending_forgery_suspect': 'Phát hiện dấu hiệu bất thường nhẹ — chuyển sang xem xét thủ công.',
     'review_blur_stamp': 'Con dấu/chữ ký bị mờ — chuyển sang xem xét thủ công thay vì từ chối.',
 }

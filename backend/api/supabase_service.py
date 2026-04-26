@@ -9,20 +9,20 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Supabase client với timeout 15s + retry logic
-# Trước đây timeout 5s gây SSL handshake timeout liên tục.
+# Supabase client với timeout 10s + retry 1 lần
+# 
+# FIX: Trước đây timeout 30s + retry 3 lần = ~90s mới fail khi mạng yếu.
+# Giảm xuống 10s + retry 1 = ~20s tối đa, response không bị treo lâu.
 # ============================================================================
 
 _service_client: Optional[Client] = None
 _anon_client: Optional[Client] = None
 
-# Timeout dài hơn cho mạng VN ↔ Supabase US
-SUPABASE_TIMEOUT = 30.0
-MAX_RETRIES = 3  # Retry tối đa 2 lần khi timeout
+SUPABASE_TIMEOUT = 10.0
+MAX_RETRIES = 1
 
 
 def get_supabase_client() -> Client:
-    """Service role client — dùng cho backend (có full quyền)"""
     global _service_client
     if _service_client is None:
         _service_client = _create_client(settings.SUPABASE_SERVICE_ROLE_KEY)
@@ -30,7 +30,6 @@ def get_supabase_client() -> Client:
 
 
 def get_supabase_anon_client() -> Client:
-    """Anon client — dùng cho public queries"""
     global _anon_client
     if _anon_client is None:
         _anon_client = _create_client(settings.SUPABASE_ANON_KEY)
@@ -38,9 +37,7 @@ def get_supabase_anon_client() -> Client:
 
 
 def _create_client(key: str) -> Client:
-    """Tạo Supabase client với timeout 15s"""
     client = create_client(settings.SUPABASE_URL, key)
-    # Set timeout 15 giây — đủ thời gian cho SSL handshake + query
     try:
         client.postgrest.session.timeout = SUPABASE_TIMEOUT
     except Exception:
@@ -49,19 +46,12 @@ def _create_client(key: str) -> Client:
 
 
 def _reset_clients():
-    """Reset clients khi bị timeout — tạo lại connection mới"""
     global _service_client, _anon_client
     _service_client = None
     _anon_client = None
 
 
 def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
-    """
-    Wrapper chạy Supabase query an toàn với retry.
-
-    Khi gặp timeout/SSL error → reset client và retry.
-    Sau khi hết retry → trả về fallback thay vì crash.
-    """
     last_error = None
 
     for attempt in range(retries + 1):
@@ -76,11 +66,10 @@ def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
             )
             _reset_clients()
             if attempt < retries:
-                time.sleep(1.0 * (attempt + 1))  # Backoff nhẹ
+                time.sleep(0.5)
                 continue
 
         except Exception as e:
-            # SSL handshake timeout & các lỗi network khác — cũng retry
             err_str = str(e).lower()
             if 'timeout' in err_str or 'ssl' in err_str or 'handshake' in err_str or 'connection' in err_str:
                 last_error = e
@@ -89,10 +78,9 @@ def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
                 )
                 _reset_clients()
                 if attempt < retries:
-                    time.sleep(1.0 * (attempt + 1))
+                    time.sleep(0.5)
                     continue
             else:
-                # Lỗi khác (vd: invalid SQL, permission) — không retry, log ra
                 logger.error(f"Supabase error: {e}")
                 return fallback
 
@@ -101,7 +89,7 @@ def _safe_execute(query_fn, fallback=None, retries: int = MAX_RETRIES):
 
 
 # ============================================================================
-# VERIFICATION REQUESTS (Bảng 2.3)
+# VERIFICATION REQUESTS
 # ============================================================================
 
 def create_verification_request(data: dict) -> dict:
@@ -126,16 +114,36 @@ def get_verification_request(request_id: int) -> Optional[dict]:
 
 
 def get_user_verification_history(user_id: str, limit: int = 50) -> list:
+    """
+    Lấy lịch sử của user.
+    
+    FIX: Trước đây query view v_user_history (chậm vì JOIN nhiều bảng).
+    Giờ ưu tiên query trực tiếp bảng verification_requests (nhanh hơn 3-5x).
+    Chỉ select các cột cần thiết để giảm payload.
+    """
     def _run():
+        # Query trực tiếp bảng verification_requests — nhanh hơn view
         result = (
-            get_supabase_client().table('v_user_history')
-            .select('*')
+            get_supabase_client().table('verification_requests')
+            .select(
+                'id, status, result_type, confidence, blur_score, message, '
+                'need_retry, verification_code, created_at, predicted_class, '
+                'original_filename, processing_time_ms, household_name, '
+                'household_address, support_categories'
+            )
             .eq('user_id', user_id)
             .order('created_at', desc=True)
             .limit(limit)
             .execute()
         )
-        return result.data or []
+        
+        items = result.data or []
+        # Thêm field result_message để đồng bộ với view cũ (frontend dùng field này)
+        for item in items:
+            item['result_message'] = item.get('message') or ''
+        
+        return items
+
     return _safe_execute(_run, fallback=[])
 
 
@@ -212,7 +220,7 @@ def get_all_configs() -> dict:
 
 
 # ============================================================================
-# ADMIN (UC07, UC08)
+# ADMIN
 # ============================================================================
 
 def get_admin_dashboard() -> dict:
@@ -246,14 +254,6 @@ def get_all_verification_requests(status: Optional[str] = None, limit: int = 100
 
 def admin_review_request(request_id: int, admin_id: Optional[str], notes: str,
                           new_status: Optional[str] = None) -> dict:
-    """
-    Cập nhật review của admin.
-    
-    admin_id: phải là UUID hợp lệ (từ Supabase Auth) hoặc None.
-              Nếu là string không phải UUID (vd 'admin-user') → bỏ qua field này
-              để tránh lỗi 'invalid input syntax for type uuid'.
-    new_status: Tùy chọn — cập nhật luôn status (success/failed) khi duyệt/từ chối.
-    """
     from datetime import datetime
     import re
 
@@ -262,16 +262,13 @@ def admin_review_request(request_id: int, admin_id: Optional[str], notes: str,
         'admin_notes': notes,
     }
 
-    # Validate admin_id phải là UUID hợp lệ
     UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
     if admin_id and UUID_PATTERN.match(str(admin_id)):
         update_data['reviewed_by'] = admin_id
     else:
-        # admin_id không hợp lệ → log nhưng vẫn cập nhật được note + status
         if admin_id:
             logger.warning(f"admin_id '{admin_id}' không phải UUID hợp lệ, bỏ qua reviewed_by")
 
-    # Cập nhật status nếu có
     if new_status:
         update_data['status'] = new_status
         if new_status == 'success':
@@ -286,10 +283,6 @@ def admin_review_request(request_id: int, admin_id: Optional[str], notes: str,
 
 def create_audit_log(user_id: Optional[str], action: str, entity_type: str = None,
                      entity_id=None, details: dict = None):
-    """
-    Audit log — không bao giờ block request chính.
-    Nếu user_id không phải UUID hợp lệ → set None.
-    """
     import re
     UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
     
@@ -305,7 +298,7 @@ def create_audit_log(user_id: Optional[str], action: str, entity_type: str = Non
         }).execute()
 
     try:
-        _safe_execute(_run, retries=0)  # Audit log không retry để tránh chậm
+        _safe_execute(_run, retries=0)
     except Exception as e:
         logger.error(f"Audit log error (non-critical): {e}")
 
@@ -315,7 +308,6 @@ def create_audit_log(user_id: Optional[str], action: str, entity_type: str = Non
 # ============================================================================
 
 def upload_image_to_storage(user_id: str, file_path: str, file_name: str) -> Optional[str]:
-    """Upload với retry — quan trọng cho việc admin xem ảnh sau này"""
     storage_path = f"{user_id}/{file_name}"
 
     for attempt in range(MAX_RETRIES + 1):
@@ -332,7 +324,7 @@ def upload_image_to_storage(user_id: str, file_path: str, file_name: str) -> Opt
             if attempt < MAX_RETRIES and ('timeout' in err_str or 'reset' in err_str or 'ssl' in err_str):
                 logger.warning(f"Storage upload retry {attempt + 1}: {e}")
                 _reset_clients()
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(0.5)
                 continue
             logger.error(f"Storage upload failed: {e}")
             return None

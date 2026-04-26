@@ -197,7 +197,7 @@ function VerificationResult({ result }: { result: VerifyResponse }) {
     const color = isPending ? '#f59e0b' : '#3b82f6'
     const bgColor = isPending ? '#fef3c7' : '#dbeafe'
     const Icon = isPending ? Clock : Eye
-    const title = isPending ? '⏳ Chờ xét duyệt thủ công' : '🔍 Cần xem xét thêm'
+    const title = isPending ? ' Chờ xét duyệt thủ công' : 'Cần xem xét thêm'
 
     return (
       <div className="rounded-2xl border-2 overflow-hidden" style={{ borderColor: color, backgroundColor: bgColor }}>
@@ -218,17 +218,17 @@ function VerificationResult({ result }: { result: VerifyResponse }) {
           <div className="bg-white/60 rounded-xl p-4 border border-white/80">
             <p className="text-xs font-bold text-foreground mb-2 uppercase tracking-wide">Lý do chuyển xét duyệt</p>
             <p className="text-sm text-muted-foreground">
-              {result.result_type === 'review_blur' && '📷 Con dấu hoặc chữ ký trong ảnh hơi mờ. Thay vì từ chối, hệ thống chuyển để nhân viên xem xét trực tiếp.'}
-              {result.result_type === 'review_forgery' && '🛡️ Phát hiện dấu hiệu bất thường nhẹ — thường do chất lượng ảnh. Nhân viên sẽ xác nhận.'}
-              {result.result_type === 'pending_forgery' && '⚠️ Có một số điểm cần kiểm tra thêm về tính xác thực của ảnh.'}
-              {result.result_type === 'pending_no_stamp' && '🔎 Hệ thống không tìm thấy con dấu đỏ rõ ràng. Nhân viên sẽ kiểm tra trực tiếp.'}
-              {result.result_type === 'pending_low_confidence' && '📊 Mức độ nhận diện ở ngưỡng biên — chưa đủ chắc chắn để tự động xác minh.'}
+              {result.result_type === 'review_blur' && ' Con dấu hoặc chữ ký trong ảnh hơi mờ. Thay vì từ chối, hệ thống chuyển để nhân viên xem xét trực tiếp.'}
+              {result.result_type === 'review_forgery' && ' Phát hiện dấu hiệu bất thường nhẹ — thường do chất lượng ảnh. Nhân viên sẽ xác nhận.'}
+              {result.result_type === 'pending_forgery' && ' Có một số điểm cần kiểm tra thêm về tính xác thực của ảnh.'}
+              {result.result_type === 'pending_no_stamp' && ' Hệ thống không tìm thấy con dấu đỏ rõ ràng. Nhân viên sẽ kiểm tra trực tiếp.'}
+              {result.result_type === 'pending_low_confidence' && ' Mức độ nhận diện ở ngưỡng biên — chưa đủ chắc chắn để tự động xác minh.'}
               {!result.result_type && 'Hồ sơ cần được xem xét thêm trước khi xác nhận.'}
             </p>
 
             <div className="mt-3 pt-3 border-t border-gray-200">
               <p className="text-xs text-muted-foreground">
-                💡 <strong>Không cần làm gì thêm.</strong> Kết quả sẽ được cập nhật trong <strong>1–3 ngày làm việc</strong>.
+                 <strong>Không cần làm gì thêm.</strong> Kết quả sẽ được cập nhật trong <strong>1–3 ngày làm việc</strong>.
               </p>
             </div>
           </div>

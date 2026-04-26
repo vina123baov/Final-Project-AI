@@ -429,11 +429,11 @@ for img_path, label in test_images:
         print(f"❌ Lỗi: {img_path}")
 
 print("="*50)
-print(f"\n📊 Thống kê Blur Score:")
+print(f"\n Thống kê Blur Score:")
 print(f"   Min: {min(blur_scores):.1f}")
 print(f"   Max: {max(blur_scores):.1f}")
 print(f"   Mean: {np.mean(blur_scores):.1f}")
-print(f"\n💡 Đề xuất BLUR_THRESHOLD = 100")
+print(f"\n Đề xuất BLUR_THRESHOLD = 100")
 
 
 #@title 13. 📊 Tìm Blur Threshold tối ưu
